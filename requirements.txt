@@ -1,6 +1,7 @@
-Flask==2.3.3
-requests==2.31.0
-Jinja2==3.1.2
-gunicorn==21.2.0
-selenium
-webdriver-manager
+Flask
+requests
+beautifulsoup4
+python-dotenv
+Pillow
+cloudinary
+gunicorn
