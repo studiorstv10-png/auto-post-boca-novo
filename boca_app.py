@@ -19,48 +19,49 @@ import cloudinary
 import cloudinary.uploader
 
 # ==============================================================================
-# BLOCO 2: CONFIGURAÇÃO INICIAL
+# BLOCO 2: CONFIGURAÇÃO INICIAL E VERIFICAÇÃO
 # ==============================================================================
 load_dotenv()
 app = Flask(__name__)
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v2.0 (FINAL E ESTÁVEL)")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v3.0 (VERSÃO DEFINITIVA)")
 
-# Configs do WordPress
+# --- VERIFICAÇÃO RIGOROSA DAS VARIÁVEIS DE AMBIENTE ---
+required_vars = [
+    'WP_URL', 'WP_USER', 'WP_PASSWORD', 'PAGE_TOKEN_BOCA', 'INSTAGRAM_ID',
+    'FACEBOOK_PAGE_ID', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'
+]
+missing_vars = [var for var in required_vars if not os.getenv(var)]
+if missing_vars:
+    error_message = f"❌ ERRO CRÍTICO: As seguintes variáveis de ambiente estão faltando: {', '.join(missing_vars)}. A aplicação não pode iniciar."
+    print(error_message)
+    # Em um ambiente real, isso deveria parar a aplicação.
+    # Em Flask, a verificação ocorrerá em cada request.
+else:
+    print("✅ [CONFIG] Todas as variáveis de ambiente foram carregadas com sucesso.")
+
+# Carregar variáveis após a verificação
 WP_URL = os.getenv('WP_URL')
 WP_USER = os.getenv('WP_USER')
 WP_PASSWORD = os.getenv('WP_PASSWORD')
-if all([WP_URL, WP_USER, WP_PASSWORD]):
-    credentials = f"{WP_USER}:{WP_PASSWORD}"
-    token_wp = b64encode(credentials.encode())
-    HEADERS_WP = {'Authorization': f'Basic {token_wp.decode("utf-8")}'}
-    print("✅ [CONFIG] Variáveis do WordPress carregadas.")
-else:
-    print("❌ [ERRO DE CONFIG] Faltando variáveis de ambiente do WordPress.")
-    HEADERS_WP = {}
-
-# Configs da API do Meta (Facebook/Instagram)
 META_API_TOKEN = os.getenv('PAGE_TOKEN_BOCA')
 INSTAGRAM_ID = os.getenv('INSTAGRAM_ID')
 FACEBOOK_PAGE_ID = os.getenv('FACEBOOK_PAGE_ID')
-if all([META_API_TOKEN, INSTAGRAM_ID, FACEBOOK_PAGE_ID]):
-    print("✅ [CONFIG] Variáveis do Facebook/Instagram carregadas.")
-else:
-    print("⚠️ [AVISO DE CONFIG] Faltando uma ou mais variáveis do Meta.")
-
-# Configs do Cloudinary para hospedar o vídeo
 CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME')
 CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY')
 CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET')
-if all([CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET]):
-    cloudinary.config(
-        cloud_name=CLOUDINARY_CLOUD_NAME,
-        api_key=CLOUDINARY_API_KEY,
-        api_secret=CLOUDINARY_API_SECRET
-    )
-    print("✅ [CONFIG] Variáveis do Cloudinary carregadas.")
-else:
-    print("❌ [ERRO DE CONFIG] Faltando variáveis de ambiente do Cloudinary.")
+
+# Configurar headers do WordPress
+credentials = f"{WP_USER}:{WP_PASSWORD}"
+token_wp = b64encode(credentials.encode())
+HEADERS_WP = {'Authorization': f'Basic {token_wp.decode("utf-8")}'}
+
+# Configurar Cloudinary
+cloudinary.config(
+    cloud_name=CLOUDINARY_CLOUD_NAME,
+    api_key=CLOUDINARY_API_KEY,
+    api_secret=CLOUDINARY_API_SECRET
+)
 
 # ==============================================================================
 # BLOCO 3: FUNÇÕES DE CRIAÇÃO DE MÍDIA
@@ -120,15 +121,9 @@ def criar_video_com_ffmpeg(bytes_imagem):
         tmp_video_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
         
         comando = [
-            'ffmpeg',
-            '-loop', '1',
-            '-i', tmp_image_path,
-            '-c:v', 'libx264',
-            '-t', '10',
-            '-pix_fmt', 'yuv420p',
-            '-vf', 'scale=1080:1920',
-            '-y',
-            tmp_video_path
+            'ffmpeg', '-loop', '1', '-i', tmp_image_path,
+            '-c:v', 'libx264', '-t', '10', '-pix_fmt', 'yuv420p',
+            '-vf', 'scale=1080:1920', '-y', tmp_video_path
         ]
         
         subprocess.run(comando, check=True, capture_output=True, text=True)
@@ -231,10 +226,20 @@ def webhook_receiver():
     print("\n" + "="*50)
     print("🔔 [WEBHOOK] Webhook para REEL recebido!")
     
+    # --- VERIFICAÇÃO DE VARIÁVEIS EM CADA REQUEST ---
+    if missing_vars:
+        return jsonify({"status": "erro_configuracao", "message": f"Faltando variáveis: {', '.join(missing_vars)}"}), 500
+
     try:
-        dados_wp = request.json
+        # --- LÓGICA ROBUSTA PARA PARSE DO WEBHOOK ---
+        dados_brutos = request.json
+        if isinstance(dados_brutos, list) and dados_brutos:
+            dados_wp = dados_brutos[0]
+        else:
+            dados_wp = dados_brutos
+        
         post_id = dados_wp.get('post_id')
-        if not post_id: raise ValueError("Webhook não enviou o ID do post.")
+        if not post_id: raise ValueError("Webhook não continha o 'post_id'.")
 
         print(f"🔍 [API WP] Buscando detalhes do post ID: {post_id}...")
         url_api_post = f"{WP_URL}/wp-json/wp/v2/posts/{post_id}"
@@ -266,7 +271,7 @@ def webhook_receiver():
             
     except Exception as e:
         print(f"❌ [ERRO CRÍTICO] Falha ao processar dados do webhook ou buscar no WordPress: {e}")
-        return jsonify({"status": "erro_processamento_wp"}), 500
+        return jsonify({"status": "erro_processamento_wp", "message": str(e)}), 500
 
     print("\n🚀 INICIANDO FLUXO DE CRIAÇÃO E PUBLICAÇÃO...")
     
@@ -296,7 +301,7 @@ def webhook_receiver():
 # ==============================================================================
 @app.route('/')
 def health_check():
-    return "Serviço de automação de REELS está no ar.", 200
+    return "Serviço de automação de REELS v3.0 está no ar.", 200
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
