@@ -19,5 +19,4 @@ COPY . .
 # Expõe a porta que a aplicação vai usar
 EXPOSE 10000
 
-# Define o comando que vai iniciar a sua aplicação
-CMD ["gunicorn", "boca_app:app", "--timeout", "120"]
+CMD ["gunicorn", "--workers", "1", "boca_app:app", "--timeout", "120"]
