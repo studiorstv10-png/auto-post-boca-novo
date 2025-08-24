@@ -215,7 +215,7 @@ def webhook_receiver():
     imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria)
     if not imagem_bytes: return jsonify({"status": "erro_criacao_imagem"}), 500
     
-    url_video_publica = construir_url_video_cloudinary(imagem_bytes)
+    url_video_publica = construir_url_video_cloudinary(bytes_imagem)
     if not url_video_publica: return jsonify({"status": "erro_construcao_url"}), 500
 
     legenda_final = f"{titulo_noticia.upper()}\n\n{resumo_noticia}\n\nLeia a matéria completa!\n\n#noticias #{categoria.replace(' ', '').lower()} #litoralnorte"
