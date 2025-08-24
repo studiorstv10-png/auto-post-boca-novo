@@ -1,477 +1,244 @@
-import os, time, json, threading, re
-from datetime import datetime, timezone
-from urllib.parse import urlparse, urljoin
+# ==============================================================================
+# BLOCO 1: IMPORTAÇÕES E CONFIGURAÇÃO
+# ==============================================================================
+import os
+import io
 import requests
+import textwrap
+import time
+from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup
-from readability import Document
-from flask import Flask, jsonify, request
+from dotenv import load_dotenv
+from PIL import Image, ImageDraw, ImageFont
+from base64 import b64encode
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
 
-# ================== CONFIG ==================
-PORT = int(os.environ.get("PORT", "10000"))
-
-# IA opcional para reescrita
-TEXTSYNTH_KEY = os.environ.get("TEXTSYNTH_KEY", "")
-
-# Agendamento
-SCRAPE_INTERVAL = int(os.environ.get("SCRAPE_INTERVAL", "300"))  # 5min
-WAIT_GNEWS = int(os.environ.get("WAIT_GNEWS", "20"))             # espera para news.google.com
-TIMEOUT = int(os.environ.get("TIMEOUT", "30"))
-
-# Categoria por cidade (ajuste se quiser)
-CITY_CATEGORY = {
-    "caraguatatuba": 116,
-    "ilhabela": 117,
-    "são sebastião": 118,
-    "sao sebastiao": 118,
-    "ubatuba": 119,
-}
-
-# Headers para evitar 403
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/122.0.0.0 Safari/537.36"
-)
-BASE_HEADERS = {
-    "User-Agent": UA,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://www.google.com/",
-}
-
-# Heurísticas para achar links de matérias em homepages
-GOOD_PATH_HINTS = [
-    "/noticia", "/notícias", "/news", "/politica", "/esportes", "/mundo",
-    "/cidade", "/brasil", "/economia", "/blog/", "/2025", "/2024", "/2023"
-]
-BAD_PATH_HINTS = [
-    "/video", "/videos", "/login", "/cadastro", "/assinante", "/tag/", "/tags/",
-    "/autor/", "/colun", "/podcast", "javascript:", "#", "/sobre", "/contato"
-]
-MAX_HOME_LINKS = 30   # quantos links candidatas testar por homepage
-
-# ================== APP/ESTADO ==================
+load_dotenv()
 app = Flask(__name__)
 
-SOURCES = []               # lista de URLs (RSS, homepage ou notícia)
-LAST_ARTICLE = {}          # cache em memória do ultimo.json
-DATA_DIR = "/tmp/autopost-data"
-os.makedirs(DATA_DIR, exist_ok=True)
-LAST_PATH = os.path.join(DATA_DIR, "ultimo.json")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v8.0 (SOLUÇÃO DEFINITIVA FINAL)")
 
+# --- Carregar e verificar variáveis ---
+WP_URL = os.getenv('WP_URL')
+WP_USER = os.getenv('WP_USER')
+WP_PASSWORD = os.getenv('WP_PASSWORD')
+META_API_TOKEN = os.getenv('USER_ACCESS_TOKEN')
+INSTAGRAM_ID = os.getenv('INSTAGRAM_ID')
+FACEBOOK_PAGE_ID = os.getenv('FACEBOOK_PAGE_ID')
+CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME')
+CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY')
+CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET')
 
-# ================== UTILS ==================
-def log(*a): print(*a, flush=True)
+# Configurar headers e Cloudinary
+credentials = f"{WP_USER}:{WP_PASSWORD}"
+token_wp = b64encode(credentials.encode())
+HEADERS_WP = {'Authorization': f'Basic {token_wp.decode("utf-8")}'}
+cloudinary.config(cloud_name=CLOUDINARY_CLOUD_NAME, api_key=CLOUDINARY_API_KEY, api_secret=CLOUDINARY_API_SECRET)
 
-def http_get(url, timeout=TIMEOUT, allow_redirects=True, accept=None):
-    headers = dict(BASE_HEADERS)
-    if accept:
-        headers["Accept"] = accept
-    r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=allow_redirects)
-    r.raise_for_status()
-    return r
-
-def normalize_url(base, href):
-    if not href: return ""
-    href = href.strip()
-    if href.startswith("//"):
-        parsed = urlparse(base)
-        href = f"{parsed.scheme}:{href}"
-    if href.startswith("http://") or href.startswith("https://"):
-        return href
-    return urljoin(base, href)
-
-def same_domain(a, b):
-    pa, pb = urlparse(a), urlparse(b)
-    return (pa.netloc.lower() == pb.netloc.lower()) and pa.netloc != ""
-
-def is_rss_url(url: str) -> bool:
-    u = url.lower()
-    return u.endswith(".xml") or "/rss" in u or "/feed" in u or "format=xml" in u or "rss.xml" in u
-
-def is_homepage(url: str) -> bool:
-    p = urlparse(url)
-    path = (p.path or "").strip("/")
-    # homepage se caminho vazio ou curtíssimo
-    return path == "" or path.count("/") <= 0
-
-def looks_like_article(url: str) -> bool:
-    u = url.lower()
-    if any(bad in u for bad in BAD_PATH_HINTS):
-        return False
-    return any(h in u for h in GOOD_PATH_HINTS) or u.endswith(".html")
-
-def resolve_google_news(url: str) -> str:
-    if "news.google.com" not in url:
-        return url
-    log("[GNEWS] aguardando", WAIT_GNEWS, "s para resolver:", url)
-    time.sleep(WAIT_GNEWS)
+# ==============================================================================
+# BLOCO 2: FUNÇÕES DE MÍDIA
+# ==============================================================================
+def criar_imagem_reel(url_imagem_noticia, titulo_post, categoria):
+    print("🎨 [ETAPA 1/3] Criando imagem base para o Reel...")
     try:
-        r = http_get(url, allow_redirects=True)
-        return r.url
+        response_img = requests.get(url_imagem_noticia, stream=True, timeout=15)
+        response_img.raise_for_status()
+        imagem_noticia = Image.open(io.BytesIO(response_img.content)).convert("RGBA")
+        logo = Image.open("logo_boca.png").convert("RGBA")
+
+        IMG_WIDTH, IMG_HEIGHT = 1080, 1920
+        cor_fundo = (0, 0, 0, 255)
+        cor_vermelha = "#e50000"
+        cor_branca = "#ffffff"
+        fonte_categoria = ImageFont.truetype("Anton-Regular.ttf", 70)
+        fonte_titulo = ImageFont.truetype("Roboto-Black.ttf", 72)
+
+        imagem_final = Image.new('RGBA', (IMG_WIDTH, IMG_HEIGHT), cor_fundo)
+        draw = ImageDraw.Draw(imagem_final)
+
+        img_w, img_h = 1080, 960
+        imagem_noticia_resized = imagem_noticia.resize((img_w, img_h), Image.Resampling.LANCZOS)
+        imagem_final.paste(imagem_noticia_resized, (0, 0))
+
+        logo.thumbnail((300, 300))
+        pos_logo_x = (IMG_WIDTH - logo.width) // 2
+        pos_logo_y = 960 - (logo.height // 2)
+        imagem_final.paste(logo, (pos_logo_x, pos_logo_y), logo)
+
+        y_cursor = 960 + (logo.height // 2) + 60
+        
+        texto_categoria = categoria.upper()
+        cat_bbox = draw.textbbox((0, 0), texto_categoria, font=fonte_categoria)
+        text_width, text_height = cat_bbox[2] - cat_bbox[0], cat_bbox[3] - cat_bbox[1]
+        banner_width, banner_height = text_width + 80, text_height + 40
+        banner_x0 = (IMG_WIDTH - banner_width) // 2
+        banner_y0 = y_cursor
+        draw.rectangle([banner_x0, banner_y0, banner_x0 + banner_width, banner_y0 + banner_height], fill=cor_vermelha)
+        draw.text((IMG_WIDTH / 2, banner_y0 + (banner_height / 2)), texto_categoria, font=fonte_categoria, fill=cor_branca, anchor="mm")
+        y_cursor += banner_height + 40
+
+        linhas_texto = textwrap.wrap(titulo_post.upper(), width=25)
+        texto_junto = "\n".join(linhas_texto)
+        draw.text((IMG_WIDTH / 2, y_cursor), texto_junto, font=fonte_titulo, fill=cor_branca, anchor="ma", align="center")
+
+        buffer_saida = io.BytesIO()
+        imagem_final.convert('RGB').save(buffer_saida, format='PNG')
+        print("✅ [ETAPA 1/3] Imagem criada com sucesso!")
+        return buffer_saida.getvalue()
     except Exception as e:
-        log("[GNEWS] fallback sem resolver:", e)
-        return url
-
-def clean_html(html: str) -> str:
-    if not html:
-        return ""
-    # remove blocos ruidosos
-    for tag in ["script", "style", "nav", "aside", "footer", "form", "noscript"]:
-        html = re.sub(fr"<{tag}\b[^>]*>.*?</{tag}>", "", html, flags=re.I | re.S)
-    # remove "leia também" etc.
-    kill = r"(leia também|veja também|publicidade|anúncio|anuncio|assista também|vídeo relacionado|video relacionado)"
-    html = re.sub(rf"<h\d[^>]*>\s*{kill}\s*</h\d>", "", html, flags=re.I)
-    html = re.sub(rf"<p[^>]*>\s*{kill}.*?</p>", "", html, flags=re.I | re.S)
-    # linhas demais
-    html = re.sub(r"(\s*\n\s*){3,}", "\n\n", html)
-    return html
-
-def extract_plain(html: str) -> str:
-    soup = BeautifulSoup(html or "", "lxml")
-    return soup.get_text(" ", strip=True)
-
-def guess_category(text: str) -> int:
-    t = (text or "").lower()
-    for k, v in CITY_CATEGORY.items():
-        if k in t:
-            return v
-    return 1
-
-def generate_tags(title: str, plain: str):
-    txt = f"{title} {plain}".lower()
-    words = re.findall(r"[a-zá-úà-ùâ-ûã-õç0-9]{3,}", txt, flags=re.I)
-    stop = set("""a o os as de do da dos das em no na nos nas para por com sem sobre entre e ou que sua seu suas seus
-                  já não sim foi são será ser está estão era pelo pela pelos pelas lhe eles elas dia ano hoje ontem amanhã
-                  the and of to in on for with from""".split())
-    freq = {}
-    for w in words:
-        if w in stop: continue
-        if w.isdigit(): continue
-        freq[w] = freq.get(w, 0) + 1
-    return [w for w, _ in sorted(freq.items(), key=lambda x: -x[1])][:10]
-
-def build_json(title: str, html: str, img: str, source: str):
-    plain = extract_plain(html)
-    cat = guess_category(f"{plain} {title}")
-    tags = generate_tags(title, plain)
-    meta = (plain[:157] + "...") if len(plain) > 160 else plain
-    return {
-        "title": title.strip(),
-        "content_html": html.strip(),
-        "meta_description": meta,
-        "tags": tags,
-        "category": cat,
-        "image": (img or "").strip(),
-        "source": (source or "").strip(),
-        "generated_at": datetime.now(timezone.utc).isoformat()
-    }
-
-# ================== EXTRAÇÃO ==================
-def extract_from_article_url(url: str):
-    """
-    Extrai título, corpo e imagem de uma URL de notícia (ou GNews resolvido).
-    Retorna (title, content_html, image_url, final_url)
-    """
-    try:
-        final = resolve_google_news(url)
-        r = http_get(final, timeout=TIMEOUT)
-        html = r.text
-
-        # readability
-        doc = Document(html)
-        title = (doc.short_title() or "").strip()
-        content_html = clean_html(doc.summary(html_partial=True) or "")
-
-        # fallback se curto
-        if len(extract_plain(content_html)) < 300:
-            soup = BeautifulSoup(html, "lxml")
-            art = soup.find("article")
-            if art:
-                content_html = clean_html(str(art))
-                if not title:
-                    h = art.find(["h1", "h2"])
-                    if h: title = h.get_text(strip=True)
-            if len(extract_plain(content_html)) < 300:
-                best, score = None, 0
-                for div in soup.find_all(["div", "main", "section"]):
-                    pcount = len(div.find_all("p"))
-                    tlen = len(div.get_text(" ", strip=True))
-                    sc = pcount * 10 + tlen
-                    if sc > score:
-                        best, score = div, sc
-                if best:
-                    content_html = clean_html(str(best))
-
-        # imagem (og/twitter)
-        img = ""
-        try:
-            soup2 = BeautifulSoup(html, "lxml")
-            og = soup2.find("meta", attrs={"property": "og:image"})
-            tw = soup2.find("meta", attrs={"name": "twitter:image"})
-            if og and og.get("content"): img = og["content"]
-            elif tw and tw.get("content"): img = tw["content"]
-        except:
-            pass
-
-        return title, content_html, img, final
-    except Exception as e:
-        log("[extract_from_article_url] erro:", e, "| url=", url)
-        return "", "", "", url
-
-def collect_article_links_from_home(home_url: str):
-    """
-    Lê a homepage e tenta descobrir links de matérias do mesmo domínio.
-    Retorna lista de URLs (no máximo MAX_HOME_LINKS)
-    """
-    try:
-        r = http_get(home_url, timeout=TIMEOUT)
-        soup = BeautifulSoup(r.text, "lxml")
-        links = []
-        seen = set()
-        for a in soup.find_all("a", href=True):
-            href = normalize_url(home_url, a["href"])
-            if not href: continue
-            if href in seen: continue
-            seen.add(href)
-            if not same_domain(home_url, href): continue
-            if any(bad in href.lower() for bad in BAD_PATH_HINTS): continue
-            if looks_like_article(href):
-                links.append(href)
-            if len(links) >= MAX_HOME_LINKS:
-                break
-        return links
-    except Exception as e:
-        log("[collect_article_links_from_home] erro:", e, "| home=", home_url)
-        return []
-
-def extract_from_rss_url(rss_url: str):
-    """
-    Lê feed RSS e tenta a primeira matéria válida.
-    Retorna (title, content_html, image_url, final_url)
-    """
-    try:
-        r = http_get(rss_url, timeout=TIMEOUT, accept="application/rss+xml,application/xml,text/xml,text/html")
-        soup = BeautifulSoup(r.content, "xml")
-        items = soup.find_all(["item", "entry"])
-        for it in items:
-            link = ""
-            link_tag = it.find("link")
-            if link_tag:
-                link = link_tag.get("href") or (link_tag.text or "").strip()
-            if not link:
-                guid = it.find("guid")
-                if guid and guid.text: link = guid.text.strip()
-            if not link: continue
-
-            title, html, img, final = extract_from_article_url(link)
-            if len(extract_plain(html)) >= 400:
-                return title, html, img, final
-        return "", "", "", rss_url
-    except Exception as e:
-        log("[extract_from_rss_url] erro:", e, "| rss=", rss_url)
-        return "", "", "", rss_url
-
-
-# ================== IA (TextSynth opcional) ==================
-def textsynth_rewrite(title: str, plain: str):
-    if not TEXTSYNTH_KEY:
-        return title, f"<p>{plain}</p>", ""
-    prompt = f"""
-Você é um jornalista do Litoral Norte de SP. Reescreva jornalisticamente o texto abaixo em HTML limpo (apenas <p>, <h2>, <ul><li>, <strong>, <em>). 4-7 parágrafos. Sem publicidade nem 'leia também'. Gere meta descrição (160 caracteres) ao final.
-
-TÍTULO ORIGINAL: {title}
-
-TEXTO ORIGINAL:
-{plain}
-"""
-    try:
-        r = requests.post(
-            "https://api.textsynth.com/v1/engines/gptj_6B/completions",
-            headers={"Authorization": f"Bearer {TEXTSYNTH_KEY}", "Content-Type": "application/json"},
-            json={"prompt": prompt, "max_tokens": 900, "temperature": 0.6, "stop": ["</html>", "</body>"]},
-            timeout=60
-        )
-        r.raise_for_status()
-        data = r.json()
-        out = (data.get("text") or "").strip()
-        out = re.sub(r"</?(html|body|head)[^>]*>", "", out, flags=re.I)
-        meta = ""
-        m = re.search(r"meta descrição[:\-]\s*(.+)$", out, flags=re.I | re.M)
-        if m: meta = m.group(1).strip()[:160]
-        return title or "", out, meta
-    except Exception as e:
-        log("[TextSynth] erro:", e)
-        return title, f"<p>{plain}</p>", ""
-
-
-# ================== PIPELINE ==================
-def extract_one(url: str):
-    """
-    Decide como tratar a URL: RSS, homepage ou artigo.
-    Retorna dicionário JSON pronto (ou None)
-    """
-    url = url.strip()
-    if not url: return None
-
-    if is_rss_url(url):
-        title, content_html, img, final = extract_from_rss_url(url)
-    elif is_homepage(url):
-        # caça links de matéria na homepage
-        for cand in collect_article_links_from_home(url):
-            t, h, img, fin = extract_from_article_url(cand)
-            if len(extract_plain(h)) >= 400:
-                title, content_html, final = t, h, fin
-                break
-        else:
-            return None
-    else:
-        title, content_html, img, final = extract_from_article_url(url)
-
-    plain = extract_plain(content_html)
-    if len(plain) < 400:
+        print(f"❌ [ERRO] Falha na criação da imagem: {e}")
         return None
 
-    new_title, rewritten_html, meta = textsynth_rewrite(title, plain)
-    if len(extract_plain(rewritten_html)) < 400:
-        # usa o limpo se reescrita ficou curta
-        rewritten_html = f"<p>{plain}</p>"
-
-    data = build_json(new_title or title, rewritten_html, img, final)
-    return data
-
-def scrape_once():
-    """
-    Percorre SOURCES; para cada uma, tenta extrair 1 matéria e salvar ultimo.json
-    """
-    global LAST_ARTICLE
-    if not SOURCES:
-        log("[JOB] Sem fontes configuradas.")
-        return
-
-    for src in list(SOURCES):
-        data = extract_one(src)
-        if data:
-            LAST_ARTICLE = data
-            with open(LAST_PATH, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-            log("[JOB] Artigo atualizado em ultimo.json:", data["title"][:90])
-            return
-
-    log("[JOB] Nenhuma fonte retornou conteúdo suficiente.")
-
-def scheduler_loop():
-    while True:
-        try:
-            scrape_once()
-        except Exception as e:
-            log("[JOB] erro inesperado:", e)
-        time.sleep(SCRAPE_INTERVAL)
-
-
-# ================== ROTAS ==================
-@app.route("/")
-def idx():
-    return "AutoPost Render Server OK", 200
-
-@app.route("/health")
-def health():
-    return jsonify({"ok": True, "time": datetime.utcnow().isoformat(), "sources": len(SOURCES)})
-
-@app.route("/sources", methods=["GET"])
-def get_sources():
-    return jsonify({"sources": SOURCES})
-
-@app.route("/sources/update", methods=["POST"])
-def set_sources():
-    """
-    JSON:
-    {
-      "sources": ["https://site.com/", "https://site.com/feed", "https://site.com/noticia/123.html"],
-      "replace": true
-    }
-    """
+def construir_url_video_cloudinary(bytes_imagem):
+    print("☁️ [ETAPA 2/3] Subindo imagem e construindo URL de vídeo...")
     try:
-        payload = request.get_json(force=True, silent=True) or {}
-        sources = payload.get("sources") or []
-        replace = bool(payload.get("replace", True))
-        urls = []
-        for s in sources:
-            s = str(s).strip()
-            if s: urls.append(s)
-        global SOURCES
-        if replace:
-            SOURCES = urls
+        upload_result = cloudinary.uploader.upload(bytes_imagem, resource_type="image")
+        public_id = upload_result.get('public_id')
+        
+        transformation_string = "du_10,l_video:audio_fundo,fl_layer_apply"
+        video_url = cloudinary.utils.cloudinary_url(
+            public_id, 
+            resource_type="video", 
+            transformation=[{'raw_transformation': transformation_string}],
+            secure=True
+        )[0]
+        
+        print(f"✅ [ETAPA 2/3] URL de vídeo construída: {video_url}")
+        return video_url
+    except Exception as e:
+        print(f"❌ [ERRO Cloudinary] Falha no upload ou construção da URL: {e}")
+        return None
+
+# ==============================================================================
+# BLOCO 3: FUNÇÕES DE PUBLICAÇÃO
+# ==============================================================================
+def publicar_reel(video_url, legenda):
+    print("📤 [ETAPA 3/3] Publicando Reels no Instagram e Facebook...")
+    resultados = {'instagram': 'falha', 'facebook': 'falha'}
+    
+    # --- Instagram ---
+    try:
+        print("\n--- TENTANDO PUBLICAR NO INSTAGRAM ---")
+        url_container_ig = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ID}/media"
+        params_ig = {'media_type': 'REELS', 'video_url': video_url, 'caption': legenda, 'access_token': META_API_TOKEN}
+        r_container_ig = requests.post(url_container_ig, params=params_ig, timeout=30)
+        r_container_ig.raise_for_status()
+        id_criacao_ig = r_container_ig.json()['id']
+        print(f"  - [IG] Contêiner de mídia criado: {id_criacao_ig}")
+
+        url_publicacao_ig = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ID}/media_publish"
+        params_publicacao_ig = {'creation_id': id_criacao_ig, 'access_token': META_API_TOKEN}
+        
+        for i in range(12):
+            r_publish_ig = requests.post(url_publicacao_ig, params=params_publicacao_ig, timeout=30)
+            if r_publish_ig.status_code == 200:
+                print("  - ✅ [IG] Reel publicado com sucesso!")
+                resultados['instagram'] = 'sucesso'
+                break
+            
+            error_info = r_publish_ig.json().get('error', {})
+            if error_info.get('code') == 9007:
+                print(f"  - [IG] Vídeo ainda processando, aguardando 10s (tentativa {i+1}/12)...")
+                time.sleep(10)
+            else:
+                raise requests.exceptions.HTTPError(response=r_publish_ig)
         else:
-            seen = set(SOURCES)
-            for u in urls:
-                if u not in seen:
-                    SOURCES.append(u)
-                    seen.add(u)
-        return jsonify({"ok": True, "count": len(SOURCES), "sources": SOURCES})
+             print("  - ❌ [IG] Tempo de processamento do vídeo esgotado.")
+             resultados['instagram'] = 'falha_timeout'
+
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
+        print(f"  - ❌ [IG] Falha ao publicar: {e}")
 
-@app.route("/job/run")
-def job_run():
-    scrape_once()
-    return jsonify({"ok": True})
-
-@app.route("/extract", methods=["POST"])
-def extract_endpoint():
-    """
-    JSON: {"url": "https://site.com/qualquer-coisa"}
-    - pode ser homepage, RSS ou link de notícia
-    - retorna o JSON da matéria (não salva)
-    """
+    # --- Facebook ---
     try:
-        payload = request.get_json(force=True, silent=True) or {}
-        url = (payload.get("url") or "").strip()
-        if not url:
-            return jsonify({"ok": False, "error": "url vazia"}), 400
-        data = extract_one(url)
-        if not data:
-            return jsonify({"ok": False, "error": "nenhum conteúdo suficiente"}), 404
-        return jsonify(data)
+        print("\n--- TENTANDO PUBLICAR NO FACEBOOK ---")
+        url_post_fb = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/videos"
+        params_fb = {'file_url': video_url, 'description': legenda, 'access_token': META_API_TOKEN}
+        r_fb = requests.post(url_post_fb, params=params_fb, timeout=180)
+        r_fb.raise_for_status()
+        print("  - ✅ [FB] Reel publicado com sucesso!")
+        resultados['facebook'] = 'sucesso'
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        print(f"  - ❌ [FB] Falha ao publicar: {e}")
+        
+    return resultados
 
-@app.route("/extract_and_save", methods=["POST"])
-def extract_and_save():
-    """
-    JSON: {"url": "https://site.com/qualquer-coisa"}
-    - faz a extração e SALVA em /artigos/ultimo.json
-    """
+# ==============================================================================
+# BLOCO 4: O MAESTRO (RECEPTOR DO WEBHOOK)
+# ==============================================================================
+@app.route('/webhook-boca', methods=['POST'])
+def webhook_receiver():
+    print("\n" + "="*50)
+    print("🔔 [WEBHOOK] Webhook para REEL recebido!")
+    
     try:
-        payload = request.get_json(force=True, silent=True) or {}
-        url = (payload.get("url") or "").strip()
-        if not url:
-            return jsonify({"ok": False, "error": "url vazia"}), 400
-        data = extract_one(url)
-        if not data:
-            return jsonify({"ok": False, "error": "nenhum conteúdo suficiente"}), 404
-        global LAST_ARTICLE
-        LAST_ARTICLE = data
-        with open(LAST_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        return jsonify({"ok": True, "saved": True, "title": data.get("title","")})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        time.sleep(5)
 
-@app.route("/artigos/ultimo.json")
-def ultimo_json():
-    if os.path.exists(LAST_PATH):
+        dados_brutos = request.json
+        dados_wp = dados_brutos[0] if isinstance(dados_brutos, list) and dados_brutos else dados_brutos
+        post_id = dados_wp.get('post_id')
+        if not post_id: raise ValueError("Webhook não continha o 'post_id'.")
+
+        print(f"🔍 [API WP] Buscando detalhes do post ID: {post_id}...")
+        url_api_post = f"{WP_URL}/wp-json/wp/v2/posts/{post_id}"
+        response_post = requests.get(url_api_post, headers=HEADERS_WP, timeout=15)
+        response_post.raise_for_status()
+        post_data = response_post.json()
+
+        titulo_noticia = BeautifulSoup(post_data.get('title', {}).get('rendered', ''), 'html.parser').get_text()
+        resumo_noticia = BeautifulSoup(post_data.get('excerpt', {}).get('rendered', ''), 'html.parser').get_text(strip=True)
+        id_imagem_destaque = post_data.get('featured_media')
+
+        categoria = "Notícias"
         try:
-            with open(LAST_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return jsonify(data)
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)}), 500
-    return jsonify(LAST_ARTICLE or {"ok": False, "error": "vazio"}), 200
+            if 'categories' in post_data and post_data['categories']:
+                id_categoria = post_data['categories'][0]
+                url_api_cat = f"{WP_URL}/wp-json/wp/v2/categories/{id_categoria}"
+                response_cat = requests.get(url_api_cat, headers=HEADERS_WP, timeout=15)
+                categoria = response_cat.json().get('name', 'Notícias')
+        except Exception:
+            print("  - Aviso: Não foi possível buscar a categoria.")
 
+        if not id_imagem_destaque: raise ValueError("Post não possui imagem de destaque.")
+        
+        url_api_media = f"{WP_URL}/wp-json/wp/v2/media/{id_imagem_destaque}"
+        response_media = requests.get(url_api_media, headers=HEADERS_WP, timeout=15)
+        url_imagem_destaque = response_media.json().get('source_url')
+            
+    except Exception as e:
+        print(f"❌ [ERRO CRÍTICO] Falha ao processar dados: {e}")
+        return jsonify({"status": "erro_processamento_wp"}), 500
 
-# ================== MAIN ==================
-if __name__ == "__main__":
-    th = threading.Thread(target=scheduler_loop, daemon=True)
-    th.start()
-    app.run(host="0.0.0.0", port=PORT)
+    imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria)
+    if not imagem_bytes: return jsonify({"status": "erro_criacao_imagem"}), 500
+    
+    # --- CORREÇÃO DEFINITIVA DO ERRO DE VARIÁVEL ---
+    url_video_publica = construir_url_video_cloudinary(imagem_bytes)
+    if not url_video_publica: return jsonify({"status": "erro_construcao_url"}), 500
+
+    legenda_final = f"{titulo_noticia.upper()}\n\n{resumo_noticia}\n\nLeia a matéria completa!\n\n#noticias #{categoria.replace(' ', '').lower()} #litoralnorte"
+    
+    resultados = publicar_reel(url_video_publica, legenda_final)
+
+    if resultados['instagram'] == 'sucesso' or resultados['facebook'] == 'sucesso':
+        print("🎉 [SUCESSO] Automação concluída com pelo menos uma publicação!")
+        return jsonify({"status": "sucesso", "resultados": resultados}), 200
+    else:
+        print("😭 [FALHA] Nenhuma publicação foi bem-sucedida.")
+        return jsonify({"status": "falha_publicacao", "resultados": resultados}), 500
+
+# ==============================================================================
+# BLOCO 5: INICIALIZAÇÃO
+# ==============================================================================
+@app.route('/')
+def health_check():
+    return "Serviço de automação de REELS v8.0 está no ar.", 200
+
+if __name__ == '__main__':
+    if any(not os.getenv(var) for var in ['WP_URL', 'WP_USER', 'WP_PASSWORD', 'USER_ACCESS_TOKEN', 'INSTAGRAM_ID', 'FACEBOOK_PAGE_ID', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']):
+        print("❌ ERRO CRÍTICO: Faltando uma ou mais variáveis de ambiente. A aplicação não pode iniciar.")
+        exit(1)
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
