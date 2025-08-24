@@ -18,7 +18,7 @@ import cloudinary.api
 load_dotenv()
 app = Flask(__name__)
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v7.0 (SOLUÇÃO HTTPS DEFINITIVA)")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v8.0 (SOLUÇÃO DEFINITIVA FINAL)")
 
 # --- Carregar e verificar variáveis ---
 WP_URL = os.getenv('WP_URL')
@@ -97,13 +97,12 @@ def construir_url_video_cloudinary(bytes_imagem):
         upload_result = cloudinary.uploader.upload(bytes_imagem, resource_type="image")
         public_id = upload_result.get('public_id')
         
-        # --- CORREÇÃO DEFINITIVA DO CLOUDINARY - FORÇANDO HTTPS ---
         transformation_string = "du_10,l_video:audio_fundo,fl_layer_apply"
         video_url = cloudinary.utils.cloudinary_url(
             public_id, 
             resource_type="video", 
             transformation=[{'raw_transformation': transformation_string}],
-            secure=True  # Força a URL a ser HTTPS
+            secure=True
         )[0]
         
         print(f"✅ [ETAPA 2/3] URL de vídeo construída: {video_url}")
@@ -215,7 +214,8 @@ def webhook_receiver():
     imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria)
     if not imagem_bytes: return jsonify({"status": "erro_criacao_imagem"}), 500
     
-    url_video_publica = construir_url_video_cloudinary(bytes_imagem)
+    # --- CORREÇÃO DEFINITIVA DO ERRO DE VARIÁVEL ---
+    url_video_publica = construir_url_video_cloudinary(imagem_bytes)
     if not url_video_publica: return jsonify({"status": "erro_construcao_url"}), 500
 
     legenda_final = f"{titulo_noticia.upper()}\n\n{resumo_noticia}\n\nLeia a matéria completa!\n\n#noticias #{categoria.replace(' ', '').lower()} #litoralnorte"
@@ -234,7 +234,7 @@ def webhook_receiver():
 # ==============================================================================
 @app.route('/')
 def health_check():
-    return "Serviço de automação de REELS v7.0 está no ar.", 200
+    return "Serviço de automação de REELS v8.0 está no ar.", 200
 
 if __name__ == '__main__':
     if any(not os.getenv(var) for var in ['WP_URL', 'WP_USER', 'WP_PASSWORD', 'USER_ACCESS_TOKEN', 'INSTAGRAM_ID', 'FACEBOOK_PAGE_ID', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']):
