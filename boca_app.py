@@ -94,12 +94,9 @@ def criar_imagem_reel(url_imagem_noticia, titulo_post, categoria):
 def construir_url_video_cloudinary(bytes_imagem):
     print("☁️ [ETAPA 2/3] Subindo imagem e construindo URL de vídeo...")
     try:
-        # Sobe a imagem para o Cloudinary
         upload_result = cloudinary.uploader.upload(bytes_imagem, resource_type="image")
         public_id = upload_result.get('public_id')
         
-        # --- CORREÇÃO DEFINITIVA DO CLOUDINARY ---
-        # Constrói a URL mágica que transforma a imagem em vídeo
         transformation_string = "du_10,l_video:audio_fundo,fl_layer_apply"
         video_url = cloudinary.utils.cloudinary_url(
             public_id, 
@@ -114,26 +111,36 @@ def construir_url_video_cloudinary(bytes_imagem):
         return None
 
 # ==============================================================================
-# BLOCO 3: FUNÇÕES DE PUBLICAÇÃO
+# BLOCO 3: FUNÇÕES DE PUBLICAÇÃO (COM DIAGNÓSTICOS AVANÇADOS)
 # ==============================================================================
 def publicar_reel(video_url, legenda):
-    print("📤 [ETAPA 3/3] Publicando Reels no Instagram e Facebook...")
+    print("📤 [ETAPA 3/3] INICIANDO PUBLICAÇÃO NAS REDES SOCIAIS...")
     resultados = {}
     
     # --- Instagram ---
+    print("\n--- TENTANDO PUBLICAR NO INSTAGRAM ---")
     try:
+        if not INSTAGRAM_ID or not META_API_TOKEN:
+            raise ValueError("ID do Instagram ou Token de Acesso não configurado.")
+
+        print(f"  - Usando Instagram ID: {INSTAGRAM_ID}")
+        print("  - Passo 1: Criando contêiner de mídia...")
         url_container_ig = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ID}/media"
         params_ig = {'media_type': 'REELS', 'video_url': video_url, 'caption': legenda, 'access_token': META_API_TOKEN}
         r_container_ig = requests.post(url_container_ig, params=params_ig, timeout=30)
+        print(f"  - Resposta da API (Criação do Contêiner): {r_container_ig.status_code} - {r_container_ig.text}")
         r_container_ig.raise_for_status()
         id_criacao_ig = r_container_ig.json()['id']
-        print(f"  - [IG] Contêiner de mídia criado: {id_criacao_ig}")
+        print(f"  - Contêiner de mídia criado com sucesso: {id_criacao_ig}")
 
+        print("  - Passo 2: Publicando o contêiner...")
         url_publicacao_ig = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ID}/media_publish"
         params_publicacao_ig = {'creation_id': id_criacao_ig, 'access_token': META_API_TOKEN}
         
-        for i in range(12): # Tentar por até 120 segundos
+        for i in range(12):
+            print(f"  - Verificando status do upload (tentativa {i+1}/12)...")
             r_publish_ig = requests.post(url_publicacao_ig, params=params_publicacao_ig, timeout=30)
+            print(f"  - Resposta da API (Publicação): {r_publish_ig.status_code} - {r_publish_ig.text}")
             if r_publish_ig.status_code == 200:
                 print("  - ✅ [IG] Reel publicado com sucesso!")
                 resultados['instagram'] = 'sucesso'
@@ -141,7 +148,7 @@ def publicar_reel(video_url, legenda):
             
             error_info = r_publish_ig.json().get('error', {})
             if error_info.get('code') == 9007:
-                print(f"  - [IG] Vídeo ainda processando, aguardando 10s (tentativa {i+1}/12)...")
+                print("  - Vídeo ainda processando, aguardando 10s...")
                 time.sleep(10)
             else:
                 raise requests.exceptions.HTTPError(response=r_publish_ig)
@@ -150,19 +157,25 @@ def publicar_reel(video_url, legenda):
              resultados['instagram'] = 'falha_timeout'
 
     except Exception as e:
-        print(f"  - ❌ [IG] Falha ao publicar: {e}")
+        print(f"  - ❌ [IG] FALHA GERAL AO PUBLICAR: {e}")
         resultados['instagram'] = f'falha: {e}'
 
     # --- Facebook ---
+    print("\n--- TENTANDO PUBLICAR NO FACEBOOK ---")
     try:
+        if not FACEBOOK_PAGE_ID or not META_API_TOKEN:
+            raise ValueError("ID da Página do Facebook ou Token de Acesso não configurado.")
+            
+        print(f"  - Usando Facebook Page ID: {FACEBOOK_PAGE_ID}")
         url_post_fb = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/videos"
         params_fb = {'file_url': video_url, 'description': legenda, 'access_token': META_API_TOKEN}
         r_fb = requests.post(url_post_fb, params=params_fb, timeout=180)
+        print(f"  - Resposta da API (Publicação): {r_fb.status_code} - {r_fb.text}")
         r_fb.raise_for_status()
         print("  - ✅ [FB] Reel publicado com sucesso!")
         resultados['facebook'] = 'sucesso'
     except Exception as e:
-        print(f"  - ❌ [FB] Falha ao publicar: {e}")
+        print(f"  - ❌ [FB] FALHA GERAL AO PUBLICAR: {e}")
         resultados['facebook'] = f'falha: {e}'
         
     return resultados
@@ -176,9 +189,7 @@ def webhook_receiver():
     print("🔔 [WEBHOOK] Webhook para REEL recebido!")
     
     try:
-        # --- CORREÇÃO DE TIMING DO WORDPRESS ---
-        print("  - Aguardando 5 segundos para garantir que o post esteja disponível...")
-        time.sleep(5)
+        time.sleep(5) # Espera 5s para o WordPress finalizar o post
 
         dados_brutos = request.json
         dados_wp = dados_brutos[0] if isinstance(dados_brutos, list) and dados_brutos else dados_brutos
