@@ -18,7 +18,7 @@ import cloudinary.api
 load_dotenv()
 app = Flask(__name__)
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v11.0 (SOLUÇÃO DE RASCUNHO)")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v12.0 (SOLUÇÃO DEFINITIVA FINAL)")
 
 # --- Carregar e verificar variáveis ---
 WP_URL = os.getenv('WP_URL')
@@ -112,7 +112,7 @@ def construir_url_video_cloudinary(bytes_imagem):
         return None
 
 # ==============================================================================
-# BLOCO 3: FUNÇÃO DE CRIAÇÃO DE RASCUNHO
+# BLOCO 3: FUNÇÃO DE PUBLICAÇÃO
 # ==============================================================================
 def criar_rascunho_no_facebook(video_url, legenda):
     print("📤 [ETAPA 3/3] Criando RASCUNHO na Página do Facebook...")
@@ -122,7 +122,7 @@ def criar_rascunho_no_facebook(video_url, legenda):
             'file_url': video_url,
             'description': legenda,
             'access_token': META_API_TOKEN,
-            'unpublished_content_type': 'DRAFT' # O comando mágico para criar um rascunho
+            'unpublished_content_type': 'DRAFT'
         }
         r = requests.post(url_post_video, params=params, timeout=180)
         print(f"  - [FB] Resposta da API: Status {r.status_code} | Resposta: {r.text}")
@@ -142,6 +142,8 @@ def webhook_receiver():
     print("🔔 [WEBHOOK] Webhook para REEL recebido!")
     
     try:
+        # --- CORREÇÃO DE TIMING DO WORDPRESS ---
+        print("  - Aguardando 5 segundos para garantir que o post esteja disponível...")
         time.sleep(5)
 
         dados_brutos = request.json
@@ -182,7 +184,7 @@ def webhook_receiver():
     imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria)
     if not imagem_bytes: return jsonify({"status": "erro_criacao_imagem"}), 500
     
-    url_video_publica = construir_url_video_cloudinary(bytes_imagem)
+    url_video_publica = construir_url_video_cloudinary(imagem_bytes)
     if not url_video_publica: return jsonify({"status": "erro_construcao_url"}), 500
 
     resumo_curto = (resumo_noticia[:2200] + '...') if len(resumo_noticia) > 2200 else resumo_noticia
@@ -202,7 +204,7 @@ def webhook_receiver():
 # ==============================================================================
 @app.route('/')
 def health_check():
-    return "Serviço de automação de REELS v11.0 (Rascunho) está no ar.", 200
+    return "Serviço de automação de REELS v12.0 (Rascunho) está no ar.", 200
 
 if __name__ == '__main__':
     if any(not os.getenv(var) for var in ['WP_URL', 'WP_USER', 'WP_PASSWORD', 'USER_ACCESS_TOKEN', 'INSTAGRAM_ID', 'FACEBOOK_PAGE_ID', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']):
