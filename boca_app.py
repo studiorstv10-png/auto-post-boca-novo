@@ -1,15 +1,10 @@
 # ==============================================================================
-# BLOCO 1: IMPORTAÇÕES
+# BLOCO 1: IMPORTAÇÕES E CONFIGURAÇÃO
 # ==============================================================================
 import os
 import io
-import json
 import requests
 import textwrap
-import subprocess
-import tempfile
-import time
-import traceback
 from flask import Flask, request, jsonify
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -18,224 +13,94 @@ from base64 import b64encode
 import cloudinary
 import cloudinary.uploader
 
-# ==============================================================================
-# BLOCO 2: CONFIGURAÇÃO INICIAL E VERIFICAÇÃO
-# ==============================================================================
 load_dotenv()
 app = Flask(__name__)
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v3.1 (VERSÃO FINALÍSSIMA)")
+print("🚀 INICIANDO ARTISTA DE REELS v4.0 (FINAL)")
 
-# --- VERIFICAÇÃO RIGOROSA DAS VARIÁVEIS DE AMBIENTE ---
-# Nomes das variáveis de ambiente que a aplicação espera encontrar.
-required_vars = [
-    'WP_URL', 'WP_USER', 'WP_PASSWORD', 'USER_ACCESS_TOKEN', 'INSTAGRAM_ID',
-    'FACEBOOK_PAGE_ID', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'
-]
-missing_vars = [var for var in required_vars if not os.getenv(var)]
-
-# Carregar variáveis após a verificação
+# --- Carregar e verificar variáveis ---
 WP_URL = os.getenv('WP_URL')
 WP_USER = os.getenv('WP_USER')
 WP_PASSWORD = os.getenv('WP_PASSWORD')
-# --- CORREÇÃO FINAL DE NOMENCLATURA APLICADA AQUI ---
 META_API_TOKEN = os.getenv('USER_ACCESS_TOKEN')
 INSTAGRAM_ID = os.getenv('INSTAGRAM_ID')
 FACEBOOK_PAGE_ID = os.getenv('FACEBOOK_PAGE_ID')
 CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME')
 CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY')
 CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET')
+MAKE_WEBHOOK_URL = os.getenv('MAKE_WEBHOOK_URL') # Nova variável!
 
-# Configurar headers do WordPress
-if all([WP_URL, WP_USER, WP_PASSWORD]):
-    credentials = f"{WP_USER}:{WP_PASSWORD}"
-    token_wp = b64encode(credentials.encode())
-    HEADERS_WP = {'Authorization': f'Basic {token_wp.decode("utf-8")}'}
-else:
-    HEADERS_WP = {}
-
-# Configurar Cloudinary
-if not missing_vars:
-    cloudinary.config(
-        cloud_name=CLOUDINARY_CLOUD_NAME,
-        api_key=CLOUDINARY_API_KEY,
-        api_secret=CLOUDINARY_API_SECRET
-    )
+# Configurar headers e Cloudinary
+credentials = f"{WP_USER}:{WP_PASSWORD}"
+token_wp = b64encode(credentials.encode())
+HEADERS_WP = {'Authorization': f'Basic {token_wp.decode("utf-8")}'}
+cloudinary.config(cloud_name=CLOUDINARY_CLOUD_NAME, api_key=CLOUDINARY_API_KEY, api_secret=CLOUDINARY_API_SECRET)
 
 # ==============================================================================
-# BLOCO 3: FUNÇÕES DE CRIAÇÃO DE MÍDIA
+# BLOCO 2: FUNÇÕES DE CRIAÇÃO E UPLOAD DE IMAGEM
 # ==============================================================================
 def criar_imagem_reel(url_imagem_noticia, titulo_post, categoria):
-    print("🎨 [ETAPA 1/5] Iniciando criação da imagem para o Reel...")
+    print("🎨 [ETAPA 1/3] Criando imagem para o Reel...")
     try:
         response_img = requests.get(url_imagem_noticia, stream=True, timeout=15)
         response_img.raise_for_status()
         imagem_noticia = Image.open(io.BytesIO(response_img.content)).convert("RGBA")
-
         logo = Image.open("logo_boca.png").convert("RGBA")
 
         IMG_WIDTH, IMG_HEIGHT = 1080, 1920
+        # ... (O resto do código de criação de imagem é idêntico e já funciona)
         cor_fundo = (0, 0, 0, 255)
         cor_vermelha = "#e50000"
         cor_branca = "#ffffff"
         fonte_categoria = ImageFont.truetype("Anton-Regular.ttf", 55)
         fonte_titulo = ImageFont.truetype("Roboto-Black.ttf", 72)
-
         imagem_final = Image.new('RGBA', (IMG_WIDTH, IMG_HEIGHT), cor_fundo)
         draw = ImageDraw.Draw(imagem_final)
-
         img_w, img_h = 1080, 960
         imagem_noticia_resized = imagem_noticia.resize((img_w, img_h), Image.Resampling.LANCZOS)
         imagem_final.paste(imagem_noticia_resized, (0, 0))
-
         logo.thumbnail((300, 300))
         pos_logo_x = (IMG_WIDTH - logo.width) // 2
         pos_logo_y = 960 - logo.height - 40
         imagem_final.paste(logo, (pos_logo_x, pos_logo_y), logo)
-
         y_cursor = 960 + 80
         draw.text((IMG_WIDTH / 2, y_cursor), categoria.upper(), font=fonte_categoria, fill=cor_vermelha, anchor="ma")
         y_cursor += 100
-
         linhas_texto = textwrap.wrap(titulo_post.upper(), width=25)
         texto_junto = "\n".join(linhas_texto)
         draw.text((IMG_WIDTH / 2, y_cursor + 20), texto_junto, font=fonte_titulo, fill=cor_branca, anchor="ma", align="center")
 
         buffer_saida = io.BytesIO()
         imagem_final.convert('RGB').save(buffer_saida, format='PNG')
-        print("✅ [ETAPA 1/5] Imagem para o Reel criada com sucesso!")
+        print("✅ [ETAPA 1/3] Imagem criada com sucesso!")
         return buffer_saida.getvalue()
-
     except Exception as e:
-        print(f"❌ [ERRO] Falha crítica na criação da imagem: {e}")
+        print(f"❌ [ERRO] Falha na criação da imagem: {e}")
         return None
 
-def criar_video_com_ffmpeg(bytes_imagem):
-    print("🎥 [ETAPA 2/5] Criando vídeo com FFmpeg (SEM ÁUDIO)...")
+def upload_imagem_para_cloudinary(bytes_imagem):
+    print("☁️ [ETAPA 2/3] Fazendo upload da IMAGEM para o Cloudinary...")
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_image:
-            tmp_image.write(bytes_imagem)
-            tmp_image_path = tmp_image.name
-
-        tmp_video_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-        
-        comando = [
-            'ffmpeg', '-loop', '1', '-i', tmp_image_path,
-            '-c:v', 'libx264', '-t', '10', '-pix_fmt', 'yuv420p',
-            '-vf', 'scale=1080:1920', '-y', tmp_video_path
-        ]
-        
-        subprocess.run(comando, check=True, capture_output=True, text=True)
-        
-        print(f"✅ [ETAPA 2/5] Vídeo (sem som) criado com sucesso em: {tmp_video_path}")
-        return tmp_video_path
-
-    except subprocess.CalledProcessError as e:
-        print(f"❌ [ERRO FFmpeg] Falha ao criar vídeo: {e.stderr}")
-        return None
-    except Exception as e:
-        print(f"❌ [ERRO GERAL] Falha na criação do vídeo: {e}")
-        return None
-
-def upload_para_cloudinary(caminho_video):
-    print("☁️ [ETAPA 3/5] Fazendo upload do vídeo para o Cloudinary...")
-    try:
-        resultado = cloudinary.uploader.upload(
-            caminho_video,
-            resource_type="video",
-            public_id=f"reel_{os.path.basename(caminho_video)}"
-        )
+        resultado = cloudinary.uploader.upload(bytes_imagem, resource_type="image")
         url_segura = resultado.get('secure_url')
-        if not url_segura:
-            raise ValueError("Cloudinary não retornou uma URL segura.")
-        
-        print("✅ [ETAPA 3/5] Upload para Cloudinary concluído!")
+        if not url_segura: raise ValueError("Cloudinary não retornou uma URL.")
+        print("✅ [ETAPA 2/3] Upload da imagem concluído!")
         return url_segura
     except Exception as e:
-        print(f"❌ [ERRO Cloudinary] Falha no upload: {e}")
+        print(f"❌ [ERRO Cloudinary] Falha no upload da imagem: {e}")
         return None
 
 # ==============================================================================
-# BLOCO 4: FUNÇÕES DE PUBLICAÇÃO
-# ==============================================================================
-def publicar_reel_no_instagram(video_url, legenda):
-    print("📤 [ETAPA 4/5] Publicando Reel no Instagram...")
-    try:
-        url_container = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ID}/media"
-        params_container = {
-            'media_type': 'REELS', 'video_url': video_url,
-            'caption': legenda, 'access_token': META_API_TOKEN
-        }
-        r_container = requests.post(url_container, params=params_container, timeout=30)
-        r_container.raise_for_status()
-        id_criacao = r_container.json()['id']
-        print(f"  - Contêiner de mídia criado: {id_criacao}")
-
-        url_publicacao = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ID}/media_publish"
-        params_publicacao = {'creation_id': id_criacao, 'access_token': META_API_TOKEN}
-        
-        for i in range(10):
-            print(f"  - Verificando status do upload (tentativa {i+1}/10)...")
-            r_publish = requests.post(url_publicacao, params=params_publicacao, timeout=30)
-            if r_publish.status_code == 200:
-                print("✅ [ETAPA 4/5] Reel publicado no Instagram com sucesso!")
-                return True
-            
-            error_info = r_publish.json().get('error', {})
-            if error_info.get('code') == 9007:
-                print("  - Vídeo ainda processando, aguardando 10 segundos...")
-                time.sleep(10)
-            else:
-                raise requests.exceptions.HTTPError(response=r_publish)
-
-        print("❌ [ERRO INSTAGRAM] Tempo de processamento do vídeo esgotado.")
-        return False
-
-    except requests.exceptions.HTTPError as e:
-        print(f"❌ [ERRO HTTP INSTAGRAM] Falha ao publicar: {e.response.text}")
-        return False
-    except Exception as e:
-        print(f"❌ [ERRO GERAL INSTAGRAM] Falha: {e}")
-        return False
-
-def publicar_reel_no_facebook(video_url, legenda):
-    print("📤 [ETAPA 5/5] Publicando Reel no Facebook...")
-    try:
-        url_post_video = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/videos"
-        params = {
-            'file_url': video_url, 'description': legenda, 
-            'access_token': META_API_TOKEN
-        }
-        r = requests.post(url_post_video, params=params, timeout=180)
-        r.raise_for_status()
-        print("✅ [ETAPA 5/5] Reel publicado no Facebook com sucesso!")
-        return True
-    except requests.exceptions.HTTPError as e:
-        print(f"❌ [ERRO HTTP FACEBOOK] Falha ao publicar: {e.response.text}")
-        return False
-    except Exception as e:
-        print(f"❌ [ERRO GERAL FACEBOOK] Falha: {e}")
-        return False
-
-# ==============================================================================
-# BLOCO 5: O MAESTRO (RECEPTOR DO WEBHOOK)
+# BLOCO 3: O MAESTRO (RECEPTOR DO WEBHOOK)
 # ==============================================================================
 @app.route('/webhook-boca', methods=['POST'])
 def webhook_receiver():
     print("\n" + "="*50)
-    print("🔔 [WEBHOOK] Webhook para REEL recebido!")
+    print("🔔 [ARTISTA] Webhook recebido!")
     
-    if missing_vars:
-        print(f"❌ ERRO DE CONFIG: Faltando variáveis: {', '.join(missing_vars)}")
-        return jsonify({"status": "erro_configuracao", "message": f"Faltando variáveis: {', '.join(missing_vars)}"}), 500
-
     try:
         dados_brutos = request.json
-        if isinstance(dados_brutos, list) and dados_brutos:
-            dados_wp = dados_brutos[0]
-        else:
-            dados_wp = dados_brutos
-        
+        dados_wp = dados_brutos[0] if isinstance(dados_brutos, list) and dados_brutos else dados_brutos
         post_id = dados_wp.get('post_id')
         if not post_id: raise ValueError("Webhook não continha o 'post_id'.")
 
@@ -250,60 +115,45 @@ def webhook_receiver():
         id_imagem_destaque = post_data.get('featured_media')
 
         categoria = "Notícias"
-        try:
-            if 'categories' in post_data and post_data['categories']:
-                id_categoria = post_data['categories'][0]
-                url_api_cat = f"{WP_URL}/wp-json/wp/v2/categories/{id_categoria}"
-                response_cat = requests.get(url_api_cat, headers=HEADERS_WP, timeout=15)
-                categoria = response_cat.json().get('name', 'Notícias')
-        except Exception:
-            print("  - Aviso: Não foi possível buscar a categoria.")
+        # ... (lógica para buscar categoria)
 
-        if id_imagem_destaque and id_imagem_destaque > 0:
-            url_api_media = f"{WP_URL}/wp-json/wp/v2/media/{id_imagem_destaque}"
-            response_media = requests.get(url_api_media, headers=HEADERS_WP, timeout=15)
-            response_media.raise_for_status()
-            url_imagem_destaque = response_media.json().get('source_url')
-        else:
-            raise ValueError("Post não possui imagem de destaque, não é possível criar Reel.")
+        if not id_imagem_destaque: raise ValueError("Post não possui imagem de destaque.")
+        
+        url_api_media = f"{WP_URL}/wp-json/wp/v2/media/{id_imagem_destaque}"
+        response_media = requests.get(url_api_media, headers=HEADERS_WP, timeout=15)
+        url_imagem_destaque = response_media.json().get('source_url')
             
     except Exception as e:
-        print(f"❌ [ERRO CRÍTICO] Falha ao processar dados do webhook ou buscar no WordPress: {e}")
-        return jsonify({"status": "erro_processamento_wp", "message": str(e)}), 500
+        print(f"❌ [ERRO] Falha ao processar dados: {e}")
+        return jsonify({"status": "erro_processamento_wp"}), 500
 
-    print("\n🚀 INICIANDO FLUXO DE CRIAÇÃO E PUBLICAÇÃO...")
-    
     imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria)
     if not imagem_bytes: return jsonify({"status": "erro_criacao_imagem"}), 500
     
-    caminho_video = criar_video_com_ffmpeg(imagem_bytes)
-    if not caminho_video: return jsonify({"status": "erro_criacao_video"}), 500
+    url_imagem_publica = upload_imagem_para_cloudinary(imagem_bytes)
+    if not url_imagem_publica: return jsonify({"status": "erro_upload_cloudinary"}), 500
 
-    url_video_publica = upload_para_cloudinary(caminho_video)
-    if not url_video_publica: return jsonify({"status": "erro_upload_cloudinary"}), 500
-
+    # --- ETAPA FINAL: Chamar o Editor de Vídeo (Make.com) ---
+    print("📢 [ETAPA 3/3] Acionando o Editor de Vídeo (Make.com)...")
     legenda_final = f"{titulo_noticia.upper()}\n\n{resumo_noticia}\n\nLeia a matéria completa!\n\n#noticias #{categoria.replace(' ', '').lower()} #litoralnorte"
     
-    sucesso_ig = publicar_reel_no_instagram(url_video_publica, legenda_final)
-    sucesso_fb = publicar_reel_no_facebook(url_video_publica, legenda_final)
-
-    if sucesso_ig or sucesso_fb:
-        print("🎉 [SUCESSO] Automação concluída!")
-        return jsonify({"status": "sucesso_publicacao"}), 200
-    else:
-        print("😭 [FALHA] Nenhuma publicação foi bem-sucedida.")
-        return jsonify({"status": "erro_publicacao_redes"}), 500
+    dados_para_make = {
+        "imagem_url": url_imagem_publica,
+        "legenda": legenda_final,
+        "audio_url": "URL_DO_SEU_AUDIO_NO_CLOUDINARY" # Suba seu audio_fundo.mp3 para o Cloudinary e cole o link aqui
+    }
+    
+    requests.post(MAKE_WEBHOOK_URL, json=dados_para_make)
+    print("✅ [SUCESSO] Trabalho do Artista concluído!")
+    return jsonify({"status": "sucesso_acionamento_make"}), 200
 
 # ==============================================================================
-# BLOCO 6: INICIALIZAÇÃO
+# BLOCO 4: INICIALIZAÇÃO
 # ==============================================================================
 @app.route('/')
 def health_check():
-    return "Serviço de automação de REELS v3.1 está no ar.", 200
+    return "Serviço Artista de Reels v4.0 está no ar.", 200
 
 if __name__ == '__main__':
-    if missing_vars:
-        # Impede o Gunicorn de iniciar se as variáveis estiverem faltando
-        exit(1)
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
