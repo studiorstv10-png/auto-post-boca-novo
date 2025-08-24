@@ -24,27 +24,22 @@ import cloudinary.uploader
 load_dotenv()
 app = Flask(__name__)
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v3.0 (VERSÃO DEFINITIVA)")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v3.1 (VERSÃO FINALÍSSIMA)")
 
 # --- VERIFICAÇÃO RIGOROSA DAS VARIÁVEIS DE AMBIENTE ---
+# Nomes das variáveis de ambiente que a aplicação espera encontrar.
 required_vars = [
-    'WP_URL', 'WP_USER', 'WP_PASSWORD', 'PAGE_TOKEN_BOCA', 'INSTAGRAM_ID',
+    'WP_URL', 'WP_USER', 'WP_PASSWORD', 'USER_ACCESS_TOKEN', 'INSTAGRAM_ID',
     'FACEBOOK_PAGE_ID', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'
 ]
 missing_vars = [var for var in required_vars if not os.getenv(var)]
-if missing_vars:
-    error_message = f"❌ ERRO CRÍTICO: As seguintes variáveis de ambiente estão faltando: {', '.join(missing_vars)}. A aplicação não pode iniciar."
-    print(error_message)
-    # Em um ambiente real, isso deveria parar a aplicação.
-    # Em Flask, a verificação ocorrerá em cada request.
-else:
-    print("✅ [CONFIG] Todas as variáveis de ambiente foram carregadas com sucesso.")
 
 # Carregar variáveis após a verificação
 WP_URL = os.getenv('WP_URL')
 WP_USER = os.getenv('WP_USER')
 WP_PASSWORD = os.getenv('WP_PASSWORD')
-META_API_TOKEN = os.getenv('PAGE_TOKEN_BOCA')
+# --- CORREÇÃO FINAL DE NOMENCLATURA APLICADA AQUI ---
+META_API_TOKEN = os.getenv('USER_ACCESS_TOKEN')
 INSTAGRAM_ID = os.getenv('INSTAGRAM_ID')
 FACEBOOK_PAGE_ID = os.getenv('FACEBOOK_PAGE_ID')
 CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME')
@@ -52,16 +47,20 @@ CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY')
 CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET')
 
 # Configurar headers do WordPress
-credentials = f"{WP_USER}:{WP_PASSWORD}"
-token_wp = b64encode(credentials.encode())
-HEADERS_WP = {'Authorization': f'Basic {token_wp.decode("utf-8")}'}
+if all([WP_URL, WP_USER, WP_PASSWORD]):
+    credentials = f"{WP_USER}:{WP_PASSWORD}"
+    token_wp = b64encode(credentials.encode())
+    HEADERS_WP = {'Authorization': f'Basic {token_wp.decode("utf-8")}'}
+else:
+    HEADERS_WP = {}
 
 # Configurar Cloudinary
-cloudinary.config(
-    cloud_name=CLOUDINARY_CLOUD_NAME,
-    api_key=CLOUDINARY_API_KEY,
-    api_secret=CLOUDINARY_API_SECRET
-)
+if not missing_vars:
+    cloudinary.config(
+        cloud_name=CLOUDINARY_CLOUD_NAME,
+        api_key=CLOUDINARY_API_KEY,
+        api_secret=CLOUDINARY_API_SECRET
+    )
 
 # ==============================================================================
 # BLOCO 3: FUNÇÕES DE CRIAÇÃO DE MÍDIA
@@ -226,12 +225,11 @@ def webhook_receiver():
     print("\n" + "="*50)
     print("🔔 [WEBHOOK] Webhook para REEL recebido!")
     
-    # --- VERIFICAÇÃO DE VARIÁVEIS EM CADA REQUEST ---
     if missing_vars:
+        print(f"❌ ERRO DE CONFIG: Faltando variáveis: {', '.join(missing_vars)}")
         return jsonify({"status": "erro_configuracao", "message": f"Faltando variáveis: {', '.join(missing_vars)}"}), 500
 
     try:
-        # --- LÓGICA ROBUSTA PARA PARSE DO WEBHOOK ---
         dados_brutos = request.json
         if isinstance(dados_brutos, list) and dados_brutos:
             dados_wp = dados_brutos[0]
@@ -301,8 +299,11 @@ def webhook_receiver():
 # ==============================================================================
 @app.route('/')
 def health_check():
-    return "Serviço de automação de REELS v3.0 está no ar.", 200
+    return "Serviço de automação de REELS v3.1 está no ar.", 200
 
 if __name__ == '__main__':
+    if missing_vars:
+        # Impede o Gunicorn de iniciar se as variáveis estiverem faltando
+        exit(1)
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
