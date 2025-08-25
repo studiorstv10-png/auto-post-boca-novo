@@ -18,7 +18,7 @@ import cloudinary.api
 load_dotenv()
 app = Flask(__name__)
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v8.1 (SOLUÇÃO DEFINITIVA FINAL)")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v9.0 (SOLUÇÃO LEGENDA CURTA)")
 
 # --- Carregar e verificar variáveis ---
 WP_URL = os.getenv('WP_URL')
@@ -214,10 +214,11 @@ def webhook_receiver():
     imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria)
     if not imagem_bytes: return jsonify({"status": "erro_criacao_imagem"}), 500
     
-    # --- CORREÇÃO DEFINITIVA DO ERRO DE VARIÁVEL ---
-    url_video_publica = construir_url_video_cloudinary(imagem_bytes)
+    url_video_publica = construir_url_video_cloudinary(bytes_imagem)
     if not url_video_publica: return jsonify({"status": "erro_construcao_url"}), 500
 
+    # --- CORREÇÃO DEFINITIVA DA LEGENDA ---
+    # Corta o resumo para um tamanho seguro para evitar erros de API
     resumo_curto = (resumo_noticia[:150] + '...') if len(resumo_noticia) > 150 else resumo_noticia
     legenda_final = f"{titulo_noticia.upper()}\n\n{resumo_curto}\n\nLeia a matéria completa!\n\n#noticias #{categoria.replace(' ', '').lower()} #litoralnorte"
     
@@ -235,7 +236,7 @@ def webhook_receiver():
 # ==============================================================================
 @app.route('/')
 def health_check():
-    return "Serviço de automação de REELS v8.1 está no ar.", 200
+    return "Serviço de automação de REELS v9.0 está no ar.", 200
 
 if __name__ == '__main__':
     if any(not os.getenv(var) for var in ['WP_URL', 'WP_USER', 'WP_PASSWORD', 'USER_ACCESS_TOKEN', 'INSTAGRAM_ID', 'FACEBOOK_PAGE_ID', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']):
