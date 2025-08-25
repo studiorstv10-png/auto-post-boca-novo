@@ -1,4 +1,4 @@
-# Use uma imagem oficial do Python como base
+# Usa uma imagem oficial do Python como base
 FROM python:3.11-slim
 
 # Define o diretório de trabalho dentro do container
@@ -17,5 +17,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # --- CORREÇÃO DEFINITIVA: O COMANDO DE EXECUÇÃO ---
-# Em vez de usar Gunicorn (um servidor web), nós executamos o script diretamente.
+# Executa o script Python diretamente, pois não é mais um servidor web.
 CMD ["python", "boca_app.py"]
