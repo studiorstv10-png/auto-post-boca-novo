@@ -18,7 +18,7 @@ import cloudinary.api
 load_dotenv()
 app = Flask(__name__)
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v8.1 (SOLUÇÃO DEFINITIVA FINAL)")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v11.0 (SOLUÇÃO DE RASCUNHO)")
 
 # --- Carregar e verificar variáveis ---
 WP_URL = os.getenv('WP_URL')
@@ -112,58 +112,26 @@ def construir_url_video_cloudinary(bytes_imagem):
         return None
 
 # ==============================================================================
-# BLOCO 3: FUNÇÕES DE PUBLICAÇÃO
+# BLOCO 3: FUNÇÃO DE CRIAÇÃO DE RASCUNHO
 # ==============================================================================
-def publicar_reel(video_url, legenda):
-    print("📤 [ETAPA 3/3] Publicando Reels no Instagram e Facebook...")
-    resultados = {'instagram': 'falha', 'facebook': 'falha'}
-    
-    # --- Instagram ---
+def criar_rascunho_no_facebook(video_url, legenda):
+    print("📤 [ETAPA 3/3] Criando RASCUNHO na Página do Facebook...")
     try:
-        print("\n--- TENTANDO PUBLICAR NO INSTAGRAM ---")
-        url_container_ig = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ID}/media"
-        params_ig = {'media_type': 'REELS', 'video_url': video_url, 'caption': legenda, 'access_token': META_API_TOKEN}
-        r_container_ig = requests.post(url_container_ig, params=params_ig, timeout=30)
-        r_container_ig.raise_for_status()
-        id_criacao_ig = r_container_ig.json()['id']
-        print(f"  - [IG] Contêiner de mídia criado: {id_criacao_ig}")
-
-        url_publicacao_ig = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ID}/media_publish"
-        params_publicacao_ig = {'creation_id': id_criacao_ig, 'access_token': META_API_TOKEN}
-        
-        for i in range(12):
-            r_publish_ig = requests.post(url_publicacao_ig, params=params_publicacao_ig, timeout=30)
-            if r_publish_ig.status_code == 200:
-                print("  - ✅ [IG] Reel publicado com sucesso!")
-                resultados['instagram'] = 'sucesso'
-                break
-            
-            error_info = r_publish_ig.json().get('error', {})
-            if error_info.get('code') == 9007:
-                print(f"  - [IG] Vídeo ainda processando, aguardando 10s (tentativa {i+1}/12)...")
-                time.sleep(10)
-            else:
-                raise requests.exceptions.HTTPError(response=r_publish_ig)
-        else:
-             print("  - ❌ [IG] Tempo de processamento do vídeo esgotado.")
-             resultados['instagram'] = 'falha_timeout'
-
+        url_post_video = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/videos"
+        params = {
+            'file_url': video_url,
+            'description': legenda,
+            'access_token': META_API_TOKEN,
+            'unpublished_content_type': 'DRAFT' # O comando mágico para criar um rascunho
+        }
+        r = requests.post(url_post_video, params=params, timeout=180)
+        print(f"  - [FB] Resposta da API: Status {r.status_code} | Resposta: {r.text}")
+        r.raise_for_status()
+        print("✅ [ETAPA 3/3] Rascunho criado com sucesso na sua Página do Facebook!")
+        return True
     except Exception as e:
-        print(f"  - ❌ [IG] Falha ao publicar: {e}")
-
-    # --- Facebook ---
-    try:
-        print("\n--- TENTANDO PUBLICAR NO FACEBOOK ---")
-        url_post_fb = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/videos"
-        params_fb = {'file_url': video_url, 'description': legenda, 'access_token': META_API_TOKEN}
-        r_fb = requests.post(url_post_fb, params=params_fb, timeout=180)
-        r_fb.raise_for_status()
-        print("  - ✅ [FB] Reel publicado com sucesso!")
-        resultados['facebook'] = 'sucesso'
-    except Exception as e:
-        print(f"  - ❌ [FB] Falha ao publicar: {e}")
-        
-    return resultados
+        print(f"❌ [ERRO FB] Falha ao criar rascunho: {e}")
+        return False
 
 # ==============================================================================
 # BLOCO 4: O MAESTRO (RECEPTOR DO WEBHOOK)
@@ -214,28 +182,27 @@ def webhook_receiver():
     imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria)
     if not imagem_bytes: return jsonify({"status": "erro_criacao_imagem"}), 500
     
-    # --- CORREÇÃO DEFINITIVA DO ERRO DE VARIÁVEL ---
-    url_video_publica = construir_url_video_cloudinary(imagem_bytes)
+    url_video_publica = construir_url_video_cloudinary(bytes_imagem)
     if not url_video_publica: return jsonify({"status": "erro_construcao_url"}), 500
 
-    resumo_curto = (resumo_noticia[:150] + '...') if len(resumo_noticia) > 150 else resumo_noticia
+    resumo_curto = (resumo_noticia[:2200] + '...') if len(resumo_noticia) > 2200 else resumo_noticia
     legenda_final = f"{titulo_noticia.upper()}\n\n{resumo_curto}\n\nLeia a matéria completa!\n\n#noticias #{categoria.replace(' ', '').lower()} #litoralnorte"
     
-    resultados = publicar_reel(url_video_publica, legenda_final)
+    sucesso = criar_rascunho_no_facebook(video_url_publica, legenda_final)
 
-    if resultados['instagram'] == 'sucesso' or resultados['facebook'] == 'sucesso':
-        print("🎉 [SUCESSO] Automação concluída com pelo menos uma publicação!")
-        return jsonify({"status": "sucesso", "resultados": resultados}), 200
+    if sucesso:
+        print("🎉 [SUCESSO] Automação concluída! Rascunho pronto para ser publicado.")
+        return jsonify({"status": "sucesso_rascunho_criado"}), 200
     else:
-        print("😭 [FALHA] Nenhuma publicação foi bem-sucedida.")
-        return jsonify({"status": "falha_publicacao", "resultados": resultados}), 500
+        print("😭 [FALHA] Não foi possível criar o rascunho.")
+        return jsonify({"status": "falha_criacao_rascunho"}), 500
 
 # ==============================================================================
 # BLOCO 5: INICIALIZAÇÃO
 # ==============================================================================
 @app.route('/')
 def health_check():
-    return "Serviço de automação de REELS v8.1 está no ar.", 200
+    return "Serviço de automação de REELS v11.0 (Rascunho) está no ar.", 200
 
 if __name__ == '__main__':
     if any(not os.getenv(var) for var in ['WP_URL', 'WP_USER', 'WP_PASSWORD', 'USER_ACCESS_TOKEN', 'INSTAGRAM_ID', 'FACEBOOK_PAGE_ID', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']):
