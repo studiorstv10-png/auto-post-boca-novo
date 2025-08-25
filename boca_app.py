@@ -218,7 +218,7 @@ def webhook_receiver():
     imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria)
     if not imagem_bytes: return jsonify({"status": "erro_criacao_imagem"}), 500
     
-    url_video_publica = construir_url_video_cloudinary(imagem_bytes)
+    url_video_publica = construir_url_video_cloudinary(bytes_imagem)
     if not url_video_publica: return jsonify({"status": "erro_construcao_url"}), 500
 
     resumo_curto = (resumo_noticia[:150] + '...') if len(resumo_noticia) > 150 else resumo_noticia
