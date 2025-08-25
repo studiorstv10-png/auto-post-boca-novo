@@ -18,7 +18,7 @@ import cloudinary.api
 load_dotenv()
 app = Flask(__name__)
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v15.0 (SOLUÇÃO FINAL E COMPLETA)")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v8.0 (SOLUÇÃO DEFINITIVA FINAL)")
 
 # --- Carregar e verificar variáveis ---
 WP_URL = os.getenv('WP_URL')
@@ -124,7 +124,6 @@ def publicar_reel(video_url, legenda):
         url_container_ig = f"https://graph.facebook.com/v19.0/{INSTAGRAM_ID}/media"
         params_ig = {'media_type': 'REELS', 'video_url': video_url, 'caption': legenda, 'access_token': META_API_TOKEN}
         r_container_ig = requests.post(url_container_ig, params=params_ig, timeout=30)
-        print(f"  - [IG] Resposta da Criação do Contêiner: Status {r_container_ig.status_code} | Resposta: {r_container_ig.text}")
         r_container_ig.raise_for_status()
         id_criacao_ig = r_container_ig.json()['id']
         print(f"  - [IG] Contêiner de mídia criado: {id_criacao_ig}")
@@ -133,9 +132,7 @@ def publicar_reel(video_url, legenda):
         params_publicacao_ig = {'creation_id': id_criacao_ig, 'access_token': META_API_TOKEN}
         
         for i in range(12):
-            print(f"  - [IG] Verificando status do upload (tentativa {i+1}/12)...")
             r_publish_ig = requests.post(url_publicacao_ig, params=params_publicacao_ig, timeout=30)
-            print(f"  - [IG] Resposta da Publicação: Status {r_publish_ig.status_code} | Resposta: {r_publish_ig.text}")
             if r_publish_ig.status_code == 200:
                 print("  - ✅ [IG] Reel publicado com sucesso!")
                 resultados['instagram'] = 'sucesso'
@@ -143,7 +140,7 @@ def publicar_reel(video_url, legenda):
             
             error_info = r_publish_ig.json().get('error', {})
             if error_info.get('code') == 9007:
-                print("  - [IG] Vídeo ainda processando, aguardando 10s...")
+                print(f"  - [IG] Vídeo ainda processando, aguardando 10s (tentativa {i+1}/12)...")
                 time.sleep(10)
             else:
                 raise requests.exceptions.HTTPError(response=r_publish_ig)
@@ -152,7 +149,7 @@ def publicar_reel(video_url, legenda):
              resultados['instagram'] = 'falha_timeout'
 
     except Exception as e:
-        print(f"  - ❌ [IG] FALHA GERAL AO PUBLICAR: {e}")
+        print(f"  - ❌ [IG] Falha ao publicar: {e}")
 
     # --- Facebook ---
     try:
@@ -160,12 +157,11 @@ def publicar_reel(video_url, legenda):
         url_post_fb = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/videos"
         params_fb = {'file_url': video_url, 'description': legenda, 'access_token': META_API_TOKEN}
         r_fb = requests.post(url_post_fb, params=params_fb, timeout=180)
-        print(f"  - [FB] Resposta da Publicação: Status {r_fb.status_code} | Resposta: {r_fb.text}")
         r_fb.raise_for_status()
         print("  - ✅ [FB] Reel publicado com sucesso!")
         resultados['facebook'] = 'sucesso'
     except Exception as e:
-        print(f"  - ❌ [FB] FALHA GERAL AO PUBLICAR: {e}")
+        print(f"  - ❌ [FB] Falha ao publicar: {e}")
         
     return resultados
 
@@ -218,7 +214,8 @@ def webhook_receiver():
     imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria)
     if not imagem_bytes: return jsonify({"status": "erro_criacao_imagem"}), 500
     
-    url_video_publica = construir_url_video_cloudinary(bytes_imagem)
+    # --- CORREÇÃO DEFINITIVA DO ERRO DE VARIÁVEL ---
+    url_video_publica = construir_url_video_cloudinary(imagem_bytes)
     if not url_video_publica: return jsonify({"status": "erro_construcao_url"}), 500
 
     resumo_curto = (resumo_noticia[:150] + '...') if len(resumo_noticia) > 150 else resumo_noticia
@@ -238,7 +235,7 @@ def webhook_receiver():
 # ==============================================================================
 @app.route('/')
 def health_check():
-    return "Serviço de automação de REELS v15.0 está no ar.", 200
+    return "Serviço de automação de REELS v8.0 está no ar.", 200
 
 if __name__ == '__main__':
     if any(not os.getenv(var) for var in ['WP_URL', 'WP_USER', 'WP_PASSWORD', 'USER_ACCESS_TOKEN', 'INSTAGRAM_ID', 'FACEBOOK_PAGE_ID', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']):
