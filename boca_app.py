@@ -16,7 +16,7 @@ import cloudinary.api
 
 load_dotenv()
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v14.0 (CRON JOB CORRIGIDO)")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v15.0 (CRON JOB FINAL)")
 
 # --- Carregar e verificar variáveis ---
 WP_URL = os.getenv('WP_URL')
@@ -51,7 +51,6 @@ def get_processed_ids():
     """Lê os IDs do arquivo de log para evitar duplicatas."""
     try:
         if not os.path.exists(PROCESSED_IDS_FILE):
-            # Cria o diretório se ele não existir
             os.makedirs(os.path.dirname(PROCESSED_IDS_FILE), exist_ok=True)
             return set()
         with open(PROCESSED_IDS_FILE, 'r') as f:
@@ -206,17 +205,17 @@ def main():
                 response_cat = requests.get(url_api_cat, headers=HEADERS_WP, timeout=15)
                 categoria = response_cat.json().get('name', 'Notícias')
 
-            # --- CORREÇÃO DEFINITIVA DO ERRO DE VARIÁVEL ---
             imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria, post_id)
             if not imagem_bytes: continue
             
+            # --- CORREÇÃO DEFINITIVA DO ERRO DE VARIÁVEL ---
             url_video_publica = construir_url_video_cloudinary(imagem_bytes, post_id)
             if not url_video_publica: continue
 
             resumo_curto = (resumo_noticia[:2200] + '...') if len(resumo_noticia) > 2200 else resumo_noticia
             legenda_final = f"{titulo_noticia.upper()}\n\n{resumo_curto}\n\nLeia a matéria completa!\n\n#noticias #{categoria.replace(' ', '').lower()} #litoralnorte"
             
-            sucesso = criar_rascunho_no_facebook(video_url_publica, legenda_final, post_id)
+            sucesso = criar_rascunho_no_facebook(url_video_publica, legenda_final, post_id)
             
             if sucesso:
                 print(f"  - Marcando post ID {post_id} como processado.")
