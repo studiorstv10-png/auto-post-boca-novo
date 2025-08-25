@@ -16,7 +16,7 @@ import cloudinary.api
 
 load_dotenv()
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v15.0 (CRON JOB FINAL)")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v13.0 (CRON JOB DEFINITIVO)")
 
 # --- Carregar e verificar variáveis ---
 WP_URL = os.getenv('WP_URL')
@@ -42,6 +42,7 @@ HEADERS_WP = {'Authorization': f'Basic {token_wp.decode("utf-8")}'}
 cloudinary.config(cloud_name=CLOUDINARY_CLOUD_NAME, api_key=CLOUDINARY_API_KEY, api_secret=CLOUDINARY_API_SECRET)
 
 # Caminho para o arquivo que armazena os IDs dos posts processados
+# O Render nos dá um disco persistente em /var/data/
 PROCESSED_IDS_FILE = '/var/data/processed_post_ids.txt'
 
 # ==============================================================================
@@ -51,6 +52,7 @@ def get_processed_ids():
     """Lê os IDs do arquivo de log para evitar duplicatas."""
     try:
         if not os.path.exists(PROCESSED_IDS_FILE):
+            # Cria o diretório se ele não existir
             os.makedirs(os.path.dirname(PROCESSED_IDS_FILE), exist_ok=True)
             return set()
         with open(PROCESSED_IDS_FILE, 'r') as f:
@@ -161,15 +163,17 @@ def main():
     print("\n" + "="*50)
     print(f"Iniciando verificação de novos posts - {time.ctime()}")
     
+    # Verifica se todas as variáveis de ambiente necessárias estão presentes.
     missing_vars = [var for var in required_vars if not os.getenv(var)]
     if missing_vars:
-        print(f"❌ ERRO CRÍTICO: Faltando variáveis: {', '.join(missing_vars)}.")
-        return
+        print(f"❌ ERRO CRÍTICO: As seguintes variáveis de ambiente estão faltando: {', '.join(missing_vars)}. A aplicação não pode continuar.")
+        return # Termina a execução se faltar configuração
 
     processed_ids = get_processed_ids()
     print(f"  - {len(processed_ids)} posts já foram processados anteriormente.")
     
     try:
+        # Busca os 5 posts mais recentes do WordPress para verificar
         url_api_posts = f"{WP_URL}/wp-json/wp/v2/posts?per_page=5&orderby=date"
         response_posts = requests.get(url_api_posts, headers=HEADERS_WP, timeout=15)
         response_posts.raise_for_status()
@@ -180,20 +184,22 @@ def main():
             post_id = str(post.get('id'))
             
             if post_id in processed_ids:
-                continue
+                continue # Pula para o próximo post se este já foi processado
             
             new_posts_found += 1
             print(f"\n--- NOVO POST ENCONTRADO: ID {post_id} ---")
             
+            # Extrai os dados do post
             titulo_noticia = BeautifulSoup(post.get('title', {}).get('rendered', ''), 'html.parser').get_text()
             resumo_noticia = BeautifulSoup(post.get('excerpt', {}).get('rendered', ''), 'html.parser').get_text(strip=True)
             id_imagem_destaque = post.get('featured_media')
 
             if not id_imagem_destaque:
                 print(f"  - ⚠️ [ID: {post_id}] Post não possui imagem de destaque. Pulando.")
-                add_processed_id(post_id)
+                add_processed_id(post_id) # Marca como processado para não tentar de novo
                 continue
 
+            # Busca a URL da imagem e a categoria
             url_api_media = f"{WP_URL}/wp-json/wp/v2/media/{id_imagem_destaque}"
             response_media = requests.get(url_api_media, headers=HEADERS_WP, timeout=15)
             url_imagem_destaque = response_media.json().get('source_url')
@@ -205,17 +211,17 @@ def main():
                 response_cat = requests.get(url_api_cat, headers=HEADERS_WP, timeout=15)
                 categoria = response_cat.json().get('name', 'Notícias')
 
+            # Inicia o fluxo de criação de mídia
             imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria, post_id)
             if not imagem_bytes: continue
             
-            # --- CORREÇÃO DEFINITIVA DO ERRO DE VARIÁVEL ---
             url_video_publica = construir_url_video_cloudinary(imagem_bytes, post_id)
             if not url_video_publica: continue
 
             resumo_curto = (resumo_noticia[:2200] + '...') if len(resumo_noticia) > 2200 else resumo_noticia
             legenda_final = f"{titulo_noticia.upper()}\n\n{resumo_curto}\n\nLeia a matéria completa!\n\n#noticias #{categoria.replace(' ', '').lower()} #litoralnorte"
             
-            sucesso = criar_rascunho_no_facebook(url_video_publica, legenda_final, post_id)
+            sucesso = criar_rascunho_no_facebook(video_url_publica, legenda_final, post_id)
             
             if sucesso:
                 print(f"  - Marcando post ID {post_id} como processado.")
