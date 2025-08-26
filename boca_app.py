@@ -1,56 +1,44 @@
 # ==============================================================================
-# BOCA_APP.PY — WP -> IMG -> VÍDEO (MP4) -> CLOUDINARY (video/upload) -> REELS
+# BOCA_APP.PY — Worker Render (WP -> IMG -> MP4 -> Cloudinary -> Reels)
 # ==============================================================================
-import os
-import io
-import time
-import textwrap
-import tempfile
-import subprocess
-import requests
+import os, io, time, textwrap, tempfile, subprocess, requests, gc
 from base64 import b64encode
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageFont
-
-import cloudinary
-import cloudinary.uploader
-import cloudinary.api
+from PIL import Image, ImageDraw, ImageFont, ImageFile
+import cloudinary, cloudinary.uploader, cloudinary.api
 from cloudinary.utils import cloudinary_url
 
-# ------------------------------------------------------------------------------
-# INICIALIZAÇÃO
-# ------------------------------------------------------------------------------
-load_dotenv()
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v14.0 (Render + Cloudinary Vídeo + Reels)")
+# ---- Segurança e memória do Pillow ----
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+Image.MAX_IMAGE_PIXELS = 40_000_000
 
-# WordPress
+load_dotenv()
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v16.1 (Worker leve Render)")
+
+# ------------------------------------------------------------------------------
+# ENV
+# ------------------------------------------------------------------------------
 WP_URL = os.getenv('WP_URL')
 WP_USER = os.getenv('WP_USER')
 WP_PASSWORD = os.getenv('WP_PASSWORD')
-
-# Meta / Facebook
 META_API_TOKEN = os.getenv('USER_ACCESS_TOKEN')
 FACEBOOK_PAGE_ID = os.getenv('FACEBOOK_PAGE_ID')
-
-# Cloudinary
 CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME')
 CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY')
 CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET')
+INTERVALO = int(os.getenv("CRON_INTERVAL_SECONDS", "300"))  # 5 min padrão
 
-# Variáveis obrigatórias
 required_vars = [
-    'WP_URL', 'WP_USER', 'WP_PASSWORD',
-    'USER_ACCESS_TOKEN', 'FACEBOOK_PAGE_ID',
-    'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET'
+    'WP_URL','WP_USER','WP_PASSWORD',
+    'USER_ACCESS_TOKEN','FACEBOOK_PAGE_ID',
+    'CLOUDINARY_CLOUD_NAME','CLOUDINARY_API_KEY','CLOUDINARY_API_SECRET'
 ]
 
-# WP Headers
 credentials = f"{WP_USER}:{WP_PASSWORD}"
-token_wp = b64encode(credentials.encode())
-HEADERS_WP = {'Authorization': f'Basic {token_wp.decode("utf-8")}'}
+token_wp = b64encode(credentials.encode()).decode("utf-8")
+HEADERS_WP = {'Authorization': f'Basic {token_wp}'}
 
-# Cloudinary config
 cloudinary.config(
     cloud_name=CLOUDINARY_CLOUD_NAME,
     api_key=CLOUDINARY_API_KEY,
@@ -58,12 +46,11 @@ cloudinary.config(
     secure=True
 )
 
-# Persistência no Render
+# Persistência simples no Render
 PROCESSED_IDS_FILE = '/var/data/processed_post_ids.txt'
 
-
 # ------------------------------------------------------------------------------
-# AUXILIARES (IDs processados)
+# Auxiliares de persistência
 # ------------------------------------------------------------------------------
 def get_processed_ids():
     try:
@@ -73,132 +60,106 @@ def get_processed_ids():
         with open(PROCESSED_IDS_FILE, 'r') as f:
             return set(line.strip() for line in f if line.strip())
     except Exception as e:
-        print(f"  - Aviso: não foi possível ler IDs processados: {e}")
+        print("  - Aviso lendo IDs:", e)
         return set()
 
-def add_processed_id(post_id):
+def add_processed_id(post_id: str):
     try:
         os.makedirs(os.path.dirname(PROCESSED_IDS_FILE), exist_ok=True)
         with open(PROCESSED_IDS_FILE, 'a') as f:
             f.write(f"{post_id}\n")
     except Exception as e:
-        print(f"  - Aviso: não foi possível salvar ID {post_id}: {e}")
-
+        print("  - Aviso salvando ID:", e)
 
 # ------------------------------------------------------------------------------
-# MÍDIA — capa do reel (imagem)
+# Mídia — capa do reel
 # ------------------------------------------------------------------------------
-def criar_imagem_reel(url_imagem_noticia, titulo_post, categoria, post_id):
-    print(f"🎨 [ID: {post_id}] Criando imagem base...")
+def criar_imagem_reel(url_imagem, titulo, categoria, post_id):
+    print(f"🎨 [ID:{post_id}] Gerando imagem...")
     try:
-        rimg = requests.get(url_imagem_noticia, stream=True, timeout=20)
-        rimg.raise_for_status()
-        imagem_noticia = Image.open(io.BytesIO(rimg.content)).convert("RGBA")
-
+        r = requests.get(url_imagem, stream=True, timeout=20)
+        r.raise_for_status()
+        img = Image.open(io.BytesIO(r.content)).convert("RGBA")
         logo = Image.open("logo_boca.png").convert("RGBA")
         fonte_categoria = ImageFont.truetype("Anton-Regular.ttf", 70)
         fonte_titulo = ImageFont.truetype("Roboto-Black.ttf", 72)
 
-        IMG_W, IMG_H = 1080, 1920
-        cor_fundo = (0, 0, 0, 255)
-        cor_vermelha = "#e50000"
-        cor_branca = "#ffffff"
+        W,H = 1080,1920
+        canvas = Image.new("RGBA",(W,H),(0,0,0,255))
+        draw = ImageDraw.Draw(canvas)
 
-        img_final = Image.new('RGBA', (IMG_W, IMG_H), cor_fundo)
-        draw = ImageDraw.Draw(img_final)
+        # topo
+        img = img.resize((1080,960), Image.Resampling.LANCZOS)
+        canvas.paste(img,(0,0))
 
-        # Foto topo 1080x960
-        imagem_noticia = imagem_noticia.resize((1080, 960), Image.Resampling.LANCZOS)
-        img_final.paste(imagem_noticia, (0, 0))
+        # logo
+        logo.thumbnail((300,300))
+        lx = (W - logo.width)//2
+        ly = 960 - (logo.height//2)
+        canvas.paste(logo,(lx,ly),logo)
 
-        # Logo central (sobre a dobra)
-        logo.thumbnail((300, 300))
-        pos_logo_x = (IMG_W - logo.width) // 2
-        pos_logo_y = 960 - (logo.height // 2)
-        img_final.paste(logo, (pos_logo_x, pos_logo_y), logo)
-
-        # Categoria
-        y = 960 + (logo.height // 2) + 60
-        texto_categoria = (categoria or "Notícias").upper()
-        cat_bbox = draw.textbbox((0, 0), texto_categoria, font=fonte_categoria)
-        tw, th = cat_bbox[2]-cat_bbox[0], cat_bbox[3]-cat_bbox[1]
-        bw, bh = tw + 80, th + 40
-        bx = (IMG_W - bw) // 2
-        by = y
-        draw.rectangle([bx, by, bx + bw, by + bh], fill=cor_vermelha)
-        draw.text((IMG_W/2, by + (bh/2)), texto_categoria, font=fonte_categoria, fill=cor_branca, anchor="mm")
+        # categoria
+        y = 960 + (logo.height//2) + 60
+        categoria = (categoria or "Notícias").upper()
+        tw,th = draw.textlength(categoria,font=fonte_categoria), fonte_categoria.size
+        bw,bh = int(tw)+80, th+40
+        bx,by = (W-bw)//2, y
+        draw.rectangle([bx,by,bx+bw,by+bh], fill="#e50000")
+        draw.text((W/2, by+bh/2), categoria, font=fonte_categoria, fill="#ffffff", anchor="mm")
         y += bh + 40
 
-        # Título
-        linhas = textwrap.wrap((titulo_post or "").upper(), width=25)
-        texto = "\n".join(linhas)
-        draw.text((IMG_W/2, y), texto, font=fonte_titulo, fill=cor_branca, anchor="ma", align="center")
+        # título
+        texto = "\n".join(textwrap.wrap((titulo or "").upper(), width=25))
+        draw.text((W/2, y), texto, font=fonte_titulo, fill="#ffffff", anchor="ma", align="center")
 
         buf = io.BytesIO()
-        img_final.convert('RGB').save(buf, format='PNG')
-        print(f"✅ [ID: {post_id}] Imagem criada.")
+        canvas.convert("RGB").save(buf, format="PNG")
         return buf.getvalue()
-
     except Exception as e:
-        print(f"❌ [ID: {post_id}] Erro ao criar imagem: {e}")
+        print(f"❌ [ID:{post_id}] Erro imagem:", e)
         return None
 
-
 # ------------------------------------------------------------------------------
-# VÍDEO — render MP4 + upload Cloudinary (sempre video/upload)
+# Vídeo — FFmpeg + Cloudinary video/upload
 # ------------------------------------------------------------------------------
 def criar_e_upar_video(imagem_bytes, post_id):
-    print(f"🎥 [ID: {post_id}] Criando e subindo o vídeo...")
-
-    # FFmpeg?
+    print(f"🎥 [ID:{post_id}] Render MP4 + upload Cloudinary...")
+    # FFmpeg disponível?
     try:
-        subprocess.run(["ffmpeg", "-version"], check=True, capture_output=True, text=True)
-        print("✅ FFmpeg disponível.")
+        subprocess.run(["ffmpeg","-version"], check=True, capture_output=True, text=True)
     except Exception:
-        print("❌ FFmpeg não encontrado. Verifique Dockerfile/Build.")
+        print("❌ FFmpeg não encontrado no container.")
         return None
 
     tmp_img = tmp_mp4 = None
     try:
-        # Salvar imagem temporária
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as timg:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as timg:
             timg.write(imagem_bytes)
             tmp_img = timg.name
 
-        # Render MP4 1080x1920 com/sem áudio
-        tmp_mp4 = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-        audio_path = "audio_fundo.mp3"
-        if os.path.exists(audio_path):
+        tmp_mp4 = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+        audio = "audio_fundo.mp3"
+        if os.path.exists(audio):
             cmd = [
-                'ffmpeg', '-y',
-                '-loop', '1', '-i', tmp_img,
-                '-i', audio_path,
-                '-vf', 'scale=1080:1920',
-                '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-                '-c:a', 'aac', '-b:a', '128k',
-                '-t', '10', '-shortest',
-                tmp_mp4
+                "ffmpeg","-y","-loop","1","-i",tmp_img,"-i",audio,
+                "-vf","scale=1080:1920","-c:v","libx264","-pix_fmt","yuv420p",
+                "-c:a","aac","-b:a","128k","-t","10","-shortest", tmp_mp4
             ]
         else:
-            print("⚠️ Sem trilha (audio_fundo.mp3 não encontrado).")
+            print("⚠️ Sem trilha (audio_fundo.mp3 ausente).")
             cmd = [
-                'ffmpeg', '-y',
-                '-loop', '1', '-i', tmp_img,
-                '-vf', 'scale=1080:1920',
-                '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-                '-t', '10',
-                tmp_mp4
+                "ffmpeg","-y","-loop","1","-i",tmp_img,
+                "-vf","scale=1080:1920","-c:v","libx264","-pix_fmt","yuv420p",
+                "-t","10", tmp_mp4
             ]
-
         subprocess.run(cmd, check=True, capture_output=True, text=True)
+
         size = os.path.getsize(tmp_mp4)
-        print(f"  - MP4 gerado: {size/1024:.1f} KB")
-        if size < 100 * 1024:
-            print("❌ MP4 muito pequeno. FFmpeg pode ter falhado.")
+        print(f"  - MP4 gerado: {size/1024:.0f} KB")
+        if size < 100*1024:
+            print("❌ MP4 muito pequeno; render falhou.")
             return None
 
-        # Upload como VÍDEO (sempre)
-        print("☁️ Enviando ao Cloudinary como VÍDEO...")
         up = cloudinary.uploader.upload_large(
             tmp_mp4,
             resource_type="video",
@@ -210,234 +171,191 @@ def criar_e_upar_video(imagem_bytes, post_id):
             invalidate=True
         )
         public_id = up.get("public_id") or f"reel_final_{post_id}"
-
-        # Forçar URL final .mp4 de video/upload
         final_url, _ = cloudinary_url(
-            public_id,
-            resource_type="video",
-            type="upload",
-            format="mp4",
-            secure=True
+            public_id, resource_type="video", type="upload", format="mp4", secure=True
         )
-        print(f"  - Cloudinary public_id: {public_id}")
-        print(f"  - URL final construída: {final_url}")
+        print("  - URL Cloudinary:", final_url)
         if "/video/upload/" not in final_url or not final_url.endswith(".mp4"):
-            print("❌ URL final não é vídeo .mp4 em /video/upload/.")
+            print("❌ URL final não é vídeo .mp4 (video/upload).")
             return None
-
-        print(f"✅ Upload OK: {final_url}")
         return final_url
 
     except subprocess.CalledProcessError as e:
-        print(f"❌ FFmpeg erro:\nSTDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}")
+        print("❌ FFmpeg erro:\n", e.stderr[:500])
         return None
     except Exception as e:
-        print(f"❌ Erro na criação/upload: {e}")
+        print("❌ Erro upload:", e)
         return None
     finally:
-        for p in (tmp_img, tmp_mp4):
+        for p in (tmp_img,tmp_mp4):
             try:
-                if p and os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
-
+                if p and os.path.exists(p): os.remove(p)
+            except: pass
 
 # ------------------------------------------------------------------------------
-# SANIDADE — validar URL do vídeo (HEAD + Accept-Ranges)
+# Sanidade — HEAD + Range
 # ------------------------------------------------------------------------------
 def validar_url_video(url):
-    """Confere se a URL é um MP4 público com suporte a range (necessário pra Graph)."""
     try:
         h = requests.head(url, timeout=25, allow_redirects=True)
-        ct = h.headers.get("Content-Type", "")
-        ar = h.headers.get("Accept-Ranges", "")
-        ok_path = ("/video/upload/" in url) and url.endswith(".mp4")
-        ok_ct = ("video" in ct) or url.endswith(".mp4")
-        ok_range = ("bytes" in (ar or "").lower())
-        if h.status_code == 200 and ok_path and ok_ct and ok_range:
-            return True
-        print(f"⚠️ HEAD {h.status_code} CT={ct} Range={ar} URL_ok={ok_path}")
-        return False
+        ct = h.headers.get("Content-Type","")
+        ar = (h.headers.get("Accept-Ranges","") or "").lower()
+        ok = (h.status_code==200 and "/video/upload/" in url and url.endswith(".mp4")
+              and ("video" in ct or url.endswith(".mp4")) and "bytes" in ar)
+        if not ok:
+            print(f"⚠️ HEAD={h.status_code} CT={ct} Range={ar}")
+        return ok
     except Exception as e:
-        print("❌ Falha no HEAD do vídeo:", e)
+        print("❌ HEAD falhou:", e)
         return False
-
 
 # ------------------------------------------------------------------------------
-# PUBLICAÇÃO — Reels (preferencial) + fallback rascunho de vídeo
+# Publicação — Reels + fallback vídeo draft
 # ------------------------------------------------------------------------------
 def publicar_reel_pagina(video_url, legenda, post_id):
-    """
-    Publica como REEL na Página.
-    Permissões do token: pages_read_engagement, pages_manage_posts, pages_read_user_content,
-    pages_show_list, pages_manage_metadata (e, às vezes, pages_manage_videos).
-    """
-    print(f"🎬 [ID: {post_id}] Publicando como REEL na Página...")
+    print(f"🎬 [ID:{post_id}] Publicando como REEL...")
     try:
-        url_reels = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/video_reels"
-        params = {
-            "video_url": video_url,     # file_url remoto
-            "description": legenda,
-            "access_token": META_API_TOKEN
-        }
-        r = requests.post(url_reels, data=params, timeout=600)
-        print(f"  - [REELS] Status {r.status_code} | {r.text[:400]}")
+        url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/video_reels"
+        data = {"video_url": video_url, "description": legenda, "access_token": META_API_TOKEN}
+        r = requests.post(url, data=data, timeout=600)
+        print(f"  - REELS {r.status_code} | {r.text[:400]}")
         r.raise_for_status()
-        data = r.json()
-        reel_id = data.get("id")
-        if reel_id:
-            print(f"✅ Reel criado! ID: {reel_id}")
-            return True
-        print("⚠️ Resposta sem ID de reel.")
-        return False
+        return bool(r.json().get("id"))
     except Exception as e:
-        print(f"❌ Erro ao publicar reel: {e}")
+        print("❌ Reel erro:", e)
         return False
 
-def criar_rascunho_no_facebook(video_url, legenda, post_id):
-    print(f"📤 [ID: {post_id}] Criando RASCUNHO de VÍDEO na Página...")
+def criar_rascunho_video_pagina(video_url, legenda, post_id):
+    print(f"📤 [ID:{post_id}] Fallback: rascunho de VÍDEO na Página...")
     try:
-        url_post_video = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/videos"
+        url = f"https://graph.facebook.com/v19.0/{FACEBOOK_PAGE_ID}/videos"
         params = {
-            'file_url': video_url,
-            'description': legenda,
-            'access_token': META_API_TOKEN,
-            'unpublished_content_type': 'DRAFT'
+            "file_url": video_url, "description": legenda,
+            "access_token": META_API_TOKEN, "unpublished_content_type": "DRAFT"
         }
-        r = requests.post(url_post_video, params=params, timeout=600)
-        print(f"  - [FB VIDEO] Status {r.status_code} | {r.text[:400]}")
+        r = requests.post(url, params=params, timeout=600)
+        print(f"  - VIDEO {r.status_code} | {r.text[:400]}")
         r.raise_for_status()
         return True
     except Exception as e:
-        print(f"❌ ERRO ao criar rascunho: {e}")
+        print("❌ Draft erro:", e)
         return False
 
-
 # ------------------------------------------------------------------------------
-# LÓGICA PRINCIPAL
+# Principal — processa 1 post por ciclo (memória baixa)
 # ------------------------------------------------------------------------------
 def main():
-    print("\n" + "=" * 50)
-    print(f"Iniciando verificação de novos posts - {time.ctime()}")
+    print("\n" + "="*48)
+    print("Rodando ciclo:", time.ctime())
 
-    # Validar envs
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
-    if missing_vars:
-        print(f"❌ ERRO CRÍTICO: faltando variáveis -> {', '.join(missing_vars)}")
+    missing = [v for v in required_vars if not os.getenv(v)]
+    if missing:
+        print("❌ Variáveis faltando:", ", ".join(missing))
         return
 
-    processed_ids = get_processed_ids()
-    print(f"  - {len(processed_ids)} posts já processados.")
+    processed = get_processed_ids()
+    print(f"  - Processados: {len(processed)}")
 
     try:
-        url_api_posts = f"{WP_URL}/wp-json/wp/v2/posts?per_page=5&orderby=date"
-        rp = requests.get(url_api_posts, headers=HEADERS_WP, timeout=25)
+        url = f"{WP_URL}/wp-json/wp/v2/posts?per_page=1&orderby=date"
+        rp = requests.get(url, headers=HEADERS_WP, timeout=25)
         rp.raise_for_status()
-        latest_posts = rp.json()
+        posts = rp.json()
+        if not posts:
+            print("  - Sem posts.")
+            return
 
-        novos = 0
-        for post in latest_posts:
-            post_id = str(post.get('id'))
-            if post_id in processed_ids:
-                continue
-            novos += 1
-            print(f"\n--- NOVO POST: ID {post_id} ---")
+        post = posts[0]
+        post_id = str(post.get('id'))
+        if post_id in processed:
+            print("  - Post já processado.")
+            return
 
-            titulo = BeautifulSoup(post.get('title', {}).get('rendered', ''), 'html.parser').get_text()
-            resumo = BeautifulSoup(post.get('excerpt', {}).get('rendered', ''), 'html.parser').get_text(strip=True)
+        # Título e resumo
+        titulo = BeautifulSoup(post.get('title',{}).get('rendered',''), 'html.parser').get_text()
+        resumo = BeautifulSoup(post.get('excerpt',{}).get('rendered',''), 'html.parser').get_text(strip=True)
 
-            # Categoria
-            categoria = "Notícias"
-            if post.get('categories'):
-                try:
-                    id_cat = post['categories'][0]
-                    rcat = requests.get(f"{WP_URL}/wp-json/wp/v2/categories/{id_cat}", headers=HEADERS_WP, timeout=12)
-                    rcat.raise_for_status()
-                    categoria = rcat.json().get('name', 'Notícias')
-                except Exception as e:
-                    print("  - Aviso (categoria):", e)
+        # Categoria
+        categoria = "Notícias"
+        if post.get('categories'):
+            try:
+                cat_id = post['categories'][0]
+                rc = requests.get(f"{WP_URL}/wp-json/wp/v2/categories/{cat_id}", headers=HEADERS_WP, timeout=12)
+                rc.raise_for_status()
+                categoria = rc.json().get('name','Notícias')
+            except Exception as e:
+                print("  - Aviso categoria:", e)
 
-            # Imagem destacada OU primeira imagem do conteúdo
-            url_img = None
-            fid = post.get('featured_media')
-            if fid:
-                try:
-                    rmedia = requests.get(f"{WP_URL}/wp-json/wp/v2/media/{fid}", headers=HEADERS_WP, timeout=15)
-                    rmedia.raise_for_status()
-                    url_img = rmedia.json().get('source_url')
-                except Exception as e:
-                    print("  - Aviso (mídia destacada):", e)
+        # Imagem destacada ou primeira do conteúdo
+        url_img = None
+        fid = post.get('featured_media')
+        if fid:
+            try:
+                rm = requests.get(f"{WP_URL}/wp-json/wp/v2/media/{fid}", headers=HEADERS_WP, timeout=15)
+                rm.raise_for_status()
+                url_img = rm.json().get('source_url')
+            except Exception as e:
+                print("  - Aviso mídia:", e)
+        if not url_img:
+            html = post.get('content',{}).get('rendered','')
+            soup = BeautifulSoup(html, 'html.parser')
+            tag = soup.find('img')
+            if tag and tag.get('src'):
+                url_img = tag['src']
+        if not url_img:
+            print("  - ⚠️ Sem imagem; pulando.")
+            add_processed_id(post_id); return
 
-            if not url_img:
-                html = post.get('content', {}).get('rendered', '')
-                soup = BeautifulSoup(html, 'html.parser')
-                fimg = soup.find('img')
-                if fimg and fimg.get('src'):
-                    url_img = fimg['src']
+        # 1) Arte
+        imagem_bytes = criar_imagem_reel(url_img, titulo, categoria, post_id)
+        if not imagem_bytes:
+            add_processed_id(post_id); return
 
-            if not url_img:
-                print("  - ⚠️ Post sem imagem. Pulando.")
-                add_processed_id(post_id)
-                continue
+        # 2) Vídeo + Cloudinary
+        url_mp4 = criar_e_upar_video(imagem_bytes, post_id)
+        del imagem_bytes; gc.collect()
+        if not url_mp4:
+            add_processed_id(post_id); return
 
-            # 1) Arte
-            img_bytes = criar_imagem_reel(url_img, titulo, categoria, post_id)
-            if not img_bytes:
-                add_processed_id(post_id)
-                continue
+        # 3) Sanidade
+        if not validar_url_video(url_mp4):
+            add_processed_id(post_id); return
 
-            # 2) Vídeo MP4 + Cloudinary (video/upload)
-            url_mp4 = criar_e_upar_video(img_bytes, post_id)
-            if not url_mp4:
-                add_processed_id(post_id)
-                continue
+        # 4) Legenda
+        resumo_curto = (resumo[:2200] + '...') if len(resumo) > 2200 else resumo
+        legenda = f"{titulo.upper()}\n\n{resumo_curto}\n\nLeia a matéria completa!\n\n#noticias #{categoria.replace(' ','').lower()} #litoralnorte"
 
-            # 3) Sanidade da URL (HEAD + Range)
-            if not validar_url_video(url_mp4):
-                print("  - ⚠️ URL MP4 reprovada na validação. Pulando publicação.")
-                add_processed_id(post_id)
-                continue
+        # 5) Publicar REEL -> fallback draft vídeo
+        ok = publicar_reel_pagina(url_mp4, legenda, post_id)
+        if not ok:
+            ok = criar_rascunho_video_pagina(url_mp4, legenda, post_id)
 
-            # 4) Legenda
-            resumo_curto = (resumo[:2200] + '...') if len(resumo) > 2200 else resumo
-            legenda = (
-                f"{titulo.upper()}\n\n"
-                f"{resumo_curto}\n\n"
-                f"Leia a matéria completa!\n\n"
-                f"#noticias #{categoria.replace(' ', '').lower()} #litoralnorte"
-            )
-
-            # 5) Publicar como REEL (preferência), com fallback para rascunho de vídeo
-            ok = publicar_reel_pagina(url_mp4, legenda, post_id)
-            if not ok:
-                print("  - Tentando fallback: rascunho de vídeo na Página...")
-                ok = criar_rascunho_no_facebook(url_mp4, legenda, post_id)
-
-            if ok:
-                print(f"  - Marcando ID {post_id} como processado.")
-                add_processed_id(post_id)
-
-        if novos == 0:
-            print("  - Nenhum post novo encontrado.")
+        if ok:
+            add_processed_id(post_id)
+            print(f"✅ ID {post_id} processado com sucesso.")
 
     except Exception as e:
-        print(f"❌ [ERRO CRÍTICO] Falha geral: {e}")
+        print("❌ Erro no ciclo:", e)
 
-    print(f"Verificação concluída - {time.ctime()}")
-    print("=" * 50 + "\n")
-
+    print("Ciclo concluído:", time.ctime())
+    print("="*48)
 
 # ------------------------------------------------------------------------------
-# LOOP CONTÍNUO (CRON INTERNO)
+# Loop do worker
 # ------------------------------------------------------------------------------
-if __name__ == '__main__':
-    intervalo = int(os.getenv("CRON_INTERVAL_SECONDS", "300"))  # padrão 5 min
+if __name__ == "__main__":
+    # checar ffmpeg uma vez (falha rápida)
+    try:
+        subprocess.run(["ffmpeg","-version"], check=True, capture_output=True, text=True)
+        print("✅ FFmpeg OK.")
+    except Exception:
+        print("❌ FFmpeg não disponível. Verifique Dockerfile.")
     while True:
         main()
-        print(f"⏳ Aguardando {intervalo}s para nova checagem...")
+        gc.collect()
+        print(f"⏳ Aguardando {INTERVALO}s...")
         try:
-            time.sleep(intervalo)
+            time.sleep(INTERVALO)
         except KeyboardInterrupt:
-            print("Encerrando...")
+            print("Encerrando worker.")
             break
