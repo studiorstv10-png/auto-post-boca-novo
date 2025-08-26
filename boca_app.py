@@ -13,12 +13,13 @@ from base64 import b64encode
 import cloudinary
 import cloudinary.uploader
 import cloudinary.api
+from cloudinary.utils import cloudinary_url
 import subprocess
 import tempfile
 
 load_dotenv()
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v13.1 (Render + Cloudinary + FB Draft)")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v13.2 (Render + Cloudinary Vídeo + FB Draft)")
 
 # --- Carregar variáveis ---
 WP_URL = os.getenv('WP_URL')
@@ -26,7 +27,7 @@ WP_USER = os.getenv('WP_USER')
 WP_PASSWORD = os.getenv('WP_PASSWORD')
 
 META_API_TOKEN = os.getenv('USER_ACCESS_TOKEN')
-INSTAGRAM_ID = os.getenv('INSTAGRAM_ID')        # (não usado neste script, mas mantido)
+INSTAGRAM_ID = os.getenv('INSTAGRAM_ID')        # reservado
 FACEBOOK_PAGE_ID = os.getenv('FACEBOOK_PAGE_ID')
 
 CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME')
@@ -57,7 +58,7 @@ PROCESSED_IDS_FILE = '/var/data/processed_post_ids.txt'
 
 
 # ==============================================================================
-# BLOCO 2: FUNÇÕES AUXILIARES
+# AUXILIARES
 # ==============================================================================
 def get_processed_ids():
     """Lê os IDs já processados para evitar duplicatas."""
@@ -83,7 +84,7 @@ def add_processed_id(post_id):
 
 
 # ==============================================================================
-# BLOCO 3: FUNÇÕES DE MÍDIA
+# MÍDIA
 # ==============================================================================
 def criar_imagem_reel(url_imagem_noticia, titulo_post, categoria, post_id):
     print(f"🎨 [ID: {post_id}] Criando imagem base...")
@@ -146,7 +147,7 @@ def criar_imagem_reel(url_imagem_noticia, titulo_post, categoria, post_id):
 def criar_e_upar_video(imagem_bytes, post_id):
     print(f"🎥 [ID: {post_id}] Criando e subindo o vídeo...")
 
-    # Checar FFmpeg disponível
+    # 1) FFmpeg disponível?
     try:
         subprocess.run(["ffmpeg", "-version"], check=True, capture_output=True, text=True)
         print("✅ FFmpeg disponível no ambiente.")
@@ -157,42 +158,83 @@ def criar_e_upar_video(imagem_bytes, post_id):
     tmp_image_path = None
     tmp_video_path = None
     try:
-        # Escrever imagem temporária
+        # 2) Grava a imagem temporária
         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_image:
             tmp_image.write(imagem_bytes)
             tmp_image_path = tmp_image.name
 
+        # 3) Render do vídeo vertical 1080x1920 com áudio (10s)
         tmp_video_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
         audio_path = "audio_fundo.mp3"
+        if not os.path.exists(audio_path):
+            print("⚠️  Áudio de fundo não encontrado. Seguiremos sem trilha.")
+            comando = [
+                'ffmpeg', '-y',
+                '-loop', '1', '-i', tmp_image_path,
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                '-vf', 'scale=1080:1920',
+                '-t', '10',
+                tmp_video_path
+            ]
+        else:
+            comando = [
+                'ffmpeg', '-y',
+                '-loop', '1', '-i', tmp_image_path,
+                '-i', audio_path,
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                '-vf', 'scale=1080:1920',
+                '-c:a', 'aac', '-b:a', '128k',
+                '-t', '10', '-shortest',
+                tmp_video_path
+            ]
 
-        comando = [
-            'ffmpeg', '-y',
-            '-loop', '1', '-i', tmp_image_path,
-            '-i', audio_path,
-            '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-            '-vf', 'scale=1080:1920',
-            '-t', '10',  # duração
-            '-shortest',
-            tmp_video_path
-        ]
-
-        proc = subprocess.run(comando, check=True, capture_output=True, text=True)
+        subprocess.run(comando, check=True, capture_output=True, text=True)
         print(f"  - [ID: {post_id}] Vídeo criado.")
 
-        # Upload Cloudinary robusto (arquivos grandes / rede lenta)
-        print(f"☁️ [ID: {post_id}] Enviando para Cloudinary...")
-        resultado = cloudinary.uploader.upload_large(
+        # 4) Sanidade do arquivo
+        try:
+            size = os.path.getsize(tmp_video_path)
+            print(f"  - Arquivo gerado: {size/1024:.1f} KB")
+            if size < 100 * 1024:
+                print("❌ Arquivo muito pequeno. FFmpeg pode ter falhado.")
+                return None
+        except Exception as e:
+            print("❌ Falha ao checar tamanho do vídeo:", e)
+            return None
+
+        # 5) Upload Cloudinary como VÍDEO MP4 (sempre)
+        print(f"☁️ [ID: {post_id}] Enviando para Cloudinary como VÍDEO...")
+        result = cloudinary.uploader.upload_large(
             tmp_video_path,
             resource_type="video",
+            type="upload",
             public_id=f"reel_final_{post_id}",
-            chunk_size=20_000_000  # pedaços de ~20MB
+            format="mp4",                # força extensão/codec na URL final
+            chunk_size=20_000_000,       # ~20MB
+            overwrite=True,
+            invalidate=True
         )
-        url_segura = resultado.get('secure_url')
-        if not url_segura:
-            raise ValueError("Cloudinary não retornou secure_url.")
 
-        print(f"✅ [ID: {post_id}] Upload concluído! URL: {url_segura}")
-        return url_segura
+        # 6) Construir URL final .mp4 garantida
+        public_id = result.get("public_id") or f"reel_final_{post_id}"
+        final_url, _ = cloudinary_url(
+            public_id,
+            resource_type="video",
+            type="upload",
+            format="mp4",
+            secure=True
+        )
+
+        print(f"  - Cloudinary public_id: {public_id}")
+        print(f"  - URL final construída: {final_url}")
+
+        # Sanidade: garantir /video/upload/ e .mp4
+        if "/video/upload/" not in final_url or not final_url.endswith(".mp4"):
+            print("❌ URL não é de vídeo .mp4. Verifique credenciais/params do Cloudinary.")
+            return None
+
+        print(f"✅ [ID: {post_id}] Upload concluído! URL MP4: {final_url}")
+        return final_url
 
     except subprocess.CalledProcessError as e:
         print(f"❌ [ID: {post_id}] FFmpeg erro:\nSTDOUT:\n{e.stdout}\nSTDERR:\n{e.stderr}")
@@ -201,13 +243,12 @@ def criar_e_upar_video(imagem_bytes, post_id):
         print(f"❌ [ID: {post_id}] ERRO na criação/upload: {e}")
         return None
     finally:
-        try:
-            if tmp_image_path and os.path.exists(tmp_image_path):
-                os.remove(tmp_image_path)
-            if tmp_video_path and os.path.exists(tmp_video_path):
-                os.remove(tmp_video_path)
-        except Exception:
-            pass
+        for p in (tmp_image_path, tmp_video_path):
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
 
 
 def criar_rascunho_no_facebook(video_url, legenda, post_id):
@@ -232,7 +273,7 @@ def criar_rascunho_no_facebook(video_url, legenda, post_id):
 
 
 # ==============================================================================
-# BLOCO 4: LÓGICA PRINCIPAL
+# LÓGICA PRINCIPAL
 # ==============================================================================
 def main():
     print("\n" + "=" * 50)
@@ -304,10 +345,10 @@ def main():
             # 1) Gera imagem com layout
             imagem_bytes = criar_imagem_reel(url_imagem_destaque, titulo_noticia, categoria, post_id)
             if not imagem_bytes:
-                add_processed_id(post_id)  # evita loop eterno
+                add_processed_id(post_id)
                 continue
 
-            # 2) Gera vídeo + upload Cloudinary
+            # 2) Gera vídeo + upload Cloudinary (vídeo .mp4 garantido)
             url_video_publica = criar_e_upar_video(imagem_bytes, post_id)
             if not url_video_publica:
                 add_processed_id(post_id)
@@ -322,8 +363,8 @@ def main():
                 f"#noticias #{categoria.replace(' ', '').lower()} #litoralnorte"
             )
 
-            # 4) Cria rascunho na Página do Facebook
-            sucesso = criar_rascunho_no_facebook(url_video_publica, legenda_final, post_id)  # <— variável correta
+            # 4) Cria rascunho na Página do Facebook (variável correta)
+            sucesso = criar_rascunho_no_facebook(url_video_publica, legenda_final, post_id)
 
             if sucesso:
                 print(f"  - Marcando post ID {post_id} como processado.")
@@ -340,7 +381,7 @@ def main():
 
 
 # ==============================================================================
-# BLOCO 5: LOOP CONTÍNUO
+# LOOP CONTÍNUO
 # ==============================================================================
 if __name__ == '__main__':
     # loop para rodar como "daemon" no Render
