@@ -19,7 +19,7 @@ import cloudinary.uploader
 load_dotenv()
 app = Flask(__name__)
 
-print("🚀 INICIANDO AUTOMAÇÃO DE REELS v15.0 (SOLUÇÃO FINAL E COMPLETA)")
+print("🚀 INICIANDO AUTOMAÇÃO DE REELS v16.0 (SOLUÇÃO OTIMIZADA FINAL)")
 
 # --- Carregar e verificar variáveis ---
 WP_URL = os.getenv('WP_URL')
@@ -94,14 +94,19 @@ def criar_imagem_reel(url_imagem_noticia, titulo_post, categoria):
 
 def criar_e_upar_video(imagem_bytes):
     print("🎥 [ETAPA 2/4] Criando vídeo localmente com FFmpeg...")
+    tmp_image_path = None
+    tmp_video_path = None
     try:
+        # Salva a imagem temporariamente no disco
         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as tmp_image:
             tmp_image.write(imagem_bytes)
             tmp_image_path = tmp_image.name
 
+        # Define o caminho para o vídeo de saída temporário
         tmp_video_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
         audio_path = "audio_fundo.mp3"
 
+        # Comando FFmpeg para criar o vídeo a partir da imagem e do áudio
         comando = [
             'ffmpeg', '-loop', '1', '-i', tmp_image_path,
             '-i', audio_path, '-c:v', 'libx264', '-t', '10',
@@ -128,9 +133,10 @@ def criar_e_upar_video(imagem_bytes):
         print(f"❌ [ERRO] Falha na criação ou upload do vídeo: {e}")
         return None
     finally:
-        if 'tmp_image_path' in locals() and os.path.exists(tmp_image_path):
+        # Limpa os arquivos temporários
+        if tmp_image_path and os.path.exists(tmp_image_path):
             os.remove(tmp_image_path)
-        if 'tmp_video_path' in locals() and os.path.exists(tmp_video_path):
+        if tmp_video_path and os.path.exists(tmp_video_path):
             os.remove(tmp_video_path)
 
 # ==============================================================================
@@ -260,7 +266,7 @@ def webhook_receiver():
 # ==============================================================================
 @app.route('/')
 def health_check():
-    return "Serviço de automação de REELS v15.0 está no ar.", 200
+    return "Serviço de automação de REELS v16.0 está no ar.", 200
 
 if __name__ == '__main__':
     if any(not os.getenv(var) for var in ['WP_URL', 'WP_USER', 'WP_PASSWORD', 'USER_ACCESS_TOKEN', 'INSTAGRAM_ID', 'FACEBOOK_PAGE_ID', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET']):
